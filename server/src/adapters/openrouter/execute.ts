@@ -395,7 +395,7 @@ async function executeToolCall(
       if (args.description) patch.description = args.description;
 
       const res = await fetch(
-        `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues/${issue.id}`,
+        `http://localhost:${apiContext.port}/api/issues/${issue.id}`,
         { method: "PATCH", headers, body: JSON.stringify(patch), signal: AbortSignal.timeout(5000) },
       );
       if (res.ok) return `Issue ${identifier} updated${args.status ? ` → ${args.status}` : ""}`;
@@ -422,9 +422,10 @@ async function executeToolCall(
       const issue = issues.find(i => i.identifier === identifier);
       if (!issue) return `Issue ${identifier} not found`;
 
+      // Comments are added via PATCH /api/issues/:id with { comment: "text" }
       const res = await fetch(
-        `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues/${issue.id}/comments`,
-        { method: "POST", headers, body: JSON.stringify({ body: args.body || "" }), signal: AbortSignal.timeout(5000) },
+        `http://localhost:${apiContext.port}/api/issues/${issue.id}`,
+        { method: "PATCH", headers, body: JSON.stringify({ comment: args.body || "" }), signal: AbortSignal.timeout(5000) },
       );
       if (res.ok) return `Comment added to ${identifier}`;
       return `Failed to add comment to ${identifier}: ${res.status}`;
