@@ -701,6 +701,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // When there's no issueId in context (heartbeat/on_demand), check for
   // assigned issues so agents don't ignore pending work.
   let assignedIssuesBlock = "";
+  const assignedIssueIds: Array<{ id: string; identifier: string; status: string }> = [];
   if (!issueId && jwtAuthHeader) {
     try {
       const port = process.env.PORT || "3100";
@@ -711,9 +712,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         { headers, signal: AbortSignal.timeout(5000) },
       );
       if (assignedRes.ok) {
-        const allAssigned = await assignedRes.json() as Array<{ identifier?: string; title?: string; status?: string; description?: string }>;
+        const allAssigned = await assignedRes.json() as Array<{ id?: string; identifier?: string; title?: string; status?: string; description?: string }>;
         const assigned = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress" || i.status === "blocked");
         if (assigned.length > 0) {
+          for (const i of assigned) {
+            if (i.id && i.identifier && i.status) assignedIssueIds.push({ id: i.id, identifier: i.identifier, status: i.status });
+          }
           const lines = assigned.slice(0, 10).map(
             (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
           );
@@ -837,6 +841,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     } catch {
       // Best effort — don't fail the run for this
+    }
+  }
+
+  // ── Auto-close assigned issues from heartbeat runs ──────
+  // When no explicit issueId but we injected assigned issues, auto-close them too.
+  if (!issueId && assignedIssueIds.length > 0 && jwtAuthHeader) {
+    const port = process.env.PORT || "3100";
+    const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: jwtAuthHeader };
+    for (const ai of assignedIssueIds) {
+      try {
+        // Re-check current status (agent may have updated it during the run)
+        const checkRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { headers, signal: AbortSignal.timeout(5000) });
+        if (!checkRes.ok) continue;
+        const current = await checkRes.json() as { status?: string };
+        if (current.status === "todo") {
+          await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { method: "PATCH", headers, body: JSON.stringify({ status: "in_progress" }), signal: AbortSignal.timeout(5000) });
+          await onLog("stdout", `[openrouter] Auto-updated ${ai.identifier} from todo → in_progress\n`);
+        } else if (current.status === "in_progress") {
+          await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { method: "PATCH", headers, body: JSON.stringify({ status: "done", comment: "[Auto-closed] Agent completed run without explicitly marking done." }), signal: AbortSignal.timeout(5000) });
+          await onLog("stdout", `[openrouter] Auto-closed ${ai.identifier} → done\n`);
+        }
+      } catch { /* best effort */ }
     }
   }
 
