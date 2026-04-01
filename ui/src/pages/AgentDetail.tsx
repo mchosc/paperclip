@@ -723,6 +723,17 @@ export function AgentDetail() {
     },
   });
 
+  const updateAvatar = useMutation({
+    mutationFn: (avatarUrl: string | null) => agentsApi.update(agentLookupRef, { avatarUrl }, resolvedCompanyId ?? undefined),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+  });
+
   const resetTaskSession = useMutation({
     mutationFn: (taskKey: string | null) =>
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
@@ -810,10 +821,13 @@ export function AgentDetail() {
         <div className="flex items-center gap-3 min-w-0">
           <AgentIconPicker
             value={agent.icon}
+            avatarUrl={agent.avatarUrl}
+            agentName={agent.name}
             onChange={(icon) => updateIcon.mutate(icon)}
+            onAvatarChange={(url) => updateAvatar.mutate(url)}
           >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
+            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors overflow-hidden">
+              <AgentIcon icon={agent.icon} avatarUrl={agent.avatarUrl} className={agent.avatarUrl ? "h-12 w-12" : "h-6 w-6"} />
             </button>
           </AgentIconPicker>
           <div className="min-w-0">

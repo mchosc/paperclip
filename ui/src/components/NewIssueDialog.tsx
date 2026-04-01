@@ -372,6 +372,7 @@ export function NewIssueDialog() {
         kind: "agent",
         agentId: agent.id,
         agentIcon: agent.icon,
+        agentAvatarUrl: agent.avatarUrl,
       });
     }
     for (const project of orderedProjects) {
@@ -1049,7 +1050,7 @@ export function NewIssueDialog() {
                   option ? (
                     currentAssignee ? (
                       <>
-                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentIcon icon={currentAssignee.icon} avatarUrl={currentAssignee.avatarUrl} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <span className="truncate">{option.label}</span>
                       </>
                     ) : (
@@ -1066,7 +1067,7 @@ export function NewIssueDialog() {
                     : null;
                   return (
                     <>
-                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                      {assignee ? <AgentIcon icon={assignee.icon} avatarUrl={assignee.avatarUrl} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
                     </>
                   );

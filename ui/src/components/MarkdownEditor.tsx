@@ -42,6 +42,7 @@ export interface MentionOption {
   kind?: "agent" | "project";
   agentId?: string;
   agentIcon?: string | null;
+  agentAvatarUrl?: string | null;
   projectId?: string;
   projectColor?: string | null;
 }
@@ -591,6 +592,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 ) : (
                   <AgentIcon
                     icon={option.agentIcon}
+                    avatarUrl={option.agentAvatarUrl}
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}

@@ -87,6 +87,7 @@ export function NewProjectDialog() {
         kind: "agent",
         agentId: agent.id,
         agentIcon: agent.icon,
+        agentAvatarUrl: agent.avatarUrl,
       });
     }
     return options;

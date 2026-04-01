@@ -49,6 +49,7 @@ export const createAgentSchema = z.object({
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
+  avatarUrl: z.string().url().max(2048).optional().nullable(),
   reportsTo: z.string().uuid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(z.string().min(1)).optional(),
