@@ -697,12 +697,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     systemParts.push(`You have ${syncedSkillCount} skill(s) in .skills/ — each is a directory containing a SKILL.md with domain knowledge. Use list_directory and read_file to consult them when the task requires specialized knowledge.`);
   }
 
+  // ── Fetch assigned issues if no explicit task ──────────────
+  // When there's no issueId in context (heartbeat/on_demand), check for
+  // assigned issues so agents don't ignore pending work.
+  let assignedIssuesBlock = "";
+  if (!issueId && jwtAuthHeader) {
+    try {
+      const port = process.env.PORT || "3100";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      headers["Authorization"] = jwtAuthHeader;
+      const assignedRes = await fetch(
+        `http://localhost:${port}/api/companies/${agent.companyId}/issues?assigneeAgentId=${agent.id}&status=todo&status=in_progress&status=blocked`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      if (assignedRes.ok) {
+        const assigned = await assignedRes.json() as Array<{ identifier?: string; title?: string; status?: string; description?: string }>;
+        if (assigned.length > 0) {
+          const lines = assigned.slice(0, 10).map(
+            (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
+          );
+          assignedIssuesBlock = `\n## YOUR ASSIGNED ISSUES (${assigned.length} open)\nYou MUST work on these — pick the highest priority one and make progress.\n${lines.join("\n")}`;
+          await onLog("stdout", `[openrouter] Found ${assigned.length} assigned issue(s)\n`);
+        }
+      }
+    } catch {
+      // Best effort
+    }
+  }
+
   const userParts: string[] = [];
   if (renderedBootstrap) userParts.push(renderedBootstrap);
   userParts.push(renderedPrompt);
   if (issueBlock) userParts.push(issueBlock);
-  if (!issueBlock && (wakeReason === "heartbeat_timer" || !wakeReason)) {
-    userParts.push("\nThis is a routine heartbeat. Report status briefly and stop. Do NOT start new work.");
+  if (assignedIssuesBlock) userParts.push(assignedIssuesBlock);
+  if (!issueBlock && !assignedIssuesBlock && (wakeReason === "heartbeat_timer" || !wakeReason)) {
+    userParts.push("\nThis is a routine heartbeat. You have no assigned tasks. Report status briefly and stop.");
   }
 
   const messages: ChatMessage[] = [
