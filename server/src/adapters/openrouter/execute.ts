@@ -805,8 +805,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // ── Auto-update issue status if agent didn't ─────────────
-  // If the agent worked on a task but never called update_issue,
-  // automatically mark it as in_progress so it doesn't stay in todo.
+  // After a successful run: if the issue is still todo → in_progress.
+  // If still in_progress (agent didn't explicitly mark done) → done.
+  // This ensures agents can't leave tasks hanging open after completing work.
   if (issueId && jwtAuthHeader) {
     try {
       const port = process.env.PORT || "3100";
@@ -819,11 +820,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (checkRes.ok) {
         const issue = await checkRes.json() as { status?: string; identifier?: string };
         if (issue.status === "todo") {
+          // First run on a task — move to in_progress (agent may need multiple runs)
           await fetch(
             `http://localhost:${port}/api/issues/${issueId}`,
             { method: "PATCH", headers, body: JSON.stringify({ status: "in_progress" }), signal: AbortSignal.timeout(5000) },
           );
           await onLog("stdout", `[openrouter] Auto-updated ${issue.identifier} from todo → in_progress\n`);
+        } else if (issue.status === "in_progress") {
+          // Agent ran on an in_progress task and finished without marking done — auto-close it
+          await fetch(
+            `http://localhost:${port}/api/issues/${issueId}`,
+            { method: "PATCH", headers, body: JSON.stringify({ status: "done", comment: "[Auto-closed] Agent completed run without explicitly marking done." }), signal: AbortSignal.timeout(5000) },
+          );
+          await onLog("stdout", `[openrouter] Auto-closed ${issue.identifier} → done\n`);
         }
       }
     } catch {
