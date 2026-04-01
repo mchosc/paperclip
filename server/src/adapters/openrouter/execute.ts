@@ -13,7 +13,7 @@ import {
   joinPromptSections,
   ensureAbsoluteDirectory,
 } from "@paperclipai/adapter-utils/server-utils";
-import { readFile, writeFile as writeFileAsync, mkdir, readdir, lstat } from "node:fs/promises";
+import { readFile, writeFile as writeFileAsync, mkdir, readdir, lstat, symlink, readlink, unlink } from "node:fs/promises";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve, dirname, relative } from "node:path";
@@ -519,13 +519,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // ── Load skills (ephemeral — inject markdown into prompt) ──
-  // Per-agent skill selection: each agent's adapterConfig.desiredSkills lists
-  // which skills to load. The "paperclip" skill (API reference) is always included.
-  // Idle heartbeats skip all skills to keep prompts fast.
-  const hasTask = !!asString(context.issueId || context.taskId, "");
+  // ── Sync skills to disk (same approach as claude_local) ──────
+  // Symlink desired skills into .skills/ in the agent workspace.
+  // Agent discovers and reads them via list_directory/read_file when needed.
   const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills) ? config.paperclipRuntimeSkills as Array<{ key: string; runtimeName: string; source: string }> : [];
-  const skillBlocks: string[] = [];
   const desiredSkillsRaw = config.desiredSkills;
   const desiredSkills = new Set<string>(["paperclip"]); // always include core
   if (Array.isArray(desiredSkillsRaw)) {
@@ -533,21 +530,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (typeof s === "string" && s.trim()) desiredSkills.add(s.trim());
     }
   }
-  if (hasTask) {
+  const skillsDir = resolve(cwd, ".skills");
+  let syncedSkillCount = 0;
+  try {
+    await mkdir(skillsDir, { recursive: true });
+    // Remove stale symlinks
+    const existing = await readdir(skillsDir).catch(() => [] as string[]);
+    for (const name of existing) {
+      const link = resolve(skillsDir, name);
+      try {
+        await readlink(link); // only remove symlinks, not real dirs
+        await unlink(link);
+      } catch { /* not a symlink — leave it */ }
+    }
+    // Create symlinks for desired skills
     for (const skill of runtimeSkills) {
       if (!skill.source) continue;
-      // Match by runtimeName or key (supports both "xlsx" and "anthropics/skills/xlsx")
       if (!desiredSkills.has(skill.runtimeName) && !desiredSkills.has(skill.key)) continue;
       try {
-        const md = sanitize(await readFile(resolve(skill.source, "SKILL.md"), "utf-8"));
-        if (md.trim()) {
-          skillBlocks.push(`### Skill: ${skill.runtimeName}\n\n${md}`);
-          await onLog("stdout", `[openrouter] Loaded skill: ${skill.key}\n`);
-        }
+        await symlink(skill.source, resolve(skillsDir, skill.runtimeName));
+        syncedSkillCount++;
+        await onLog("stdout", `[openrouter] Synced skill: ${skill.key}\n`);
       } catch {
-        // Skill file not readable — skip silently
+        // Symlink failed (e.g. already exists as a dir) — skip
       }
     }
+  } catch {
+    // Skills dir creation failed — continue without skills
   }
 
   // ── Build prompt ───────────────────────────────────────────
@@ -670,9 +679,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "6. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
   );
 
-  // Inject skills into system prompt
-  if (skillBlocks.length > 0) {
-    systemParts.push("", "## AVAILABLE SKILLS", "", ...skillBlocks);
+  // Point agent to skills directory (if any were synced)
+  if (syncedSkillCount > 0) {
+    systemParts.push(`You have ${syncedSkillCount} skill(s) in .skills/ — each is a directory containing a SKILL.md with domain knowledge. Use list_directory and read_file to consult them when the task requires specialized knowledge.`);
   }
 
   const userParts: string[] = [];
