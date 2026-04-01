@@ -520,14 +520,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // ── Load skills (ephemeral — inject markdown into prompt) ──
-  // Only load skills when there's actual work to do (has an issue assigned).
-  // Idle timer heartbeats skip skills to keep prompts small and fast.
+  // Only load the core Paperclip skill (API reference) and skip optional/large skills
+  // to keep prompts under control. Idle heartbeats skip all skills.
   const hasTask = !!asString(context.issueId || context.taskId, "");
   const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills) ? config.paperclipRuntimeSkills as Array<{ key: string; runtimeName: string; source: string }> : [];
   const skillBlocks: string[] = [];
+  // Only load the core paperclip skill — it has the API reference agents need.
+  // Other skills (xlsx, pdf, doc-coauthoring etc) bloat the prompt without adding value
+  // since OpenRouter agents use native tools, not curl-based skill patterns.
+  const CORE_SKILLS = new Set(["paperclip"]);
   if (hasTask) {
     for (const skill of runtimeSkills) {
       if (!skill.source) continue;
+      if (!CORE_SKILLS.has(skill.runtimeName)) continue;
       try {
         const md = sanitize(await readFile(resolve(skill.source, "SKILL.md"), "utf-8"));
         if (md.trim()) {
@@ -651,13 +656,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "3. In each phase: {N}-CONTEXT.md, {N}-RESEARCH.md, {N}-{M}-PLAN.md (with <objective>...</objective>), {N}-{M}-SUMMARY.md when done, {N}-VERIFICATION.md (frontmatter status: passed/gaps_found)",
     "4. Update STATE.md as you progress. Skip GSD for heartbeats and simple status reports.",
     "",
-    "RULES:",
-    "- ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
-    "- Stay focused on the assigned task. Do not start unrelated work.",
-    "- Use minimal tool calls. When done, summarize what you accomplished and STOP.",
-    "- For heartbeats without a task, report status briefly and stop.",
-    "- To delegate work (e.g., sending email), create a sub-issue via create_issue and assign it to the appropriate agent.",
-    "- Use update_issue to mark tasks as done/in_progress/blocked. Use add_comment for progress updates.",
+    "RULES (in priority order):",
+    "1. ISSUE STATUS IS MANDATORY: Before your run ends, you MUST call update_issue to set status (in_progress, done, or blocked). A run that does work but leaves the issue in 'todo' is a FAILED run. This is your #1 obligation.",
+    "2. Stay focused on the assigned task. Do the actual work — do NOT create coordination issues, progress check issues, or planning issues. Just do the work.",
+    "3. When delegating (e.g., email to Hermes), create ONE sub-issue with complete details. Do not create chains of delegation.",
+    "4. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
+    "5. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
+    "6. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
   );
 
   // Inject skills into system prompt
@@ -717,7 +722,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     // Warn agent when nearing the turn limit
     if (turn === maxTurns - 3) {
-      messages.push({ role: "user", content: "SYSTEM: You have 2 tool calls remaining. You MUST stop using tools and write a final summary of what you accomplished, what you found, and any remaining work. Do NOT make any more tool calls." });
+      messages.push({ role: "user", content: "SYSTEM: You have 2 tool calls remaining before this run ends. You MUST do these things NOW:\n1. Call update_issue to set the task status (done, in_progress, or blocked)\n2. Call add_comment with a summary of what you accomplished\nIf you have remaining work, set status to in_progress. If complete, set to done. Do NOT skip the status update." });
       await onLog("stdout", `[openrouter] Warning agent: nearing turn limit\n`);
     }
 
@@ -742,9 +747,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // Note: totalCost comes from the x-openrouter-cost header. If OpenRouter didn't
-  // return it (which happens for some models), we leave it at 0 rather than guessing
-  // with hardcoded per-model pricing that would be wrong for most models.
+  // ── Auto-update issue status if agent didn't ─────────────
+  // If the agent worked on a task but never called update_issue,
+  // automatically mark it as in_progress so it doesn't stay in todo.
+  if (issueId && jwtAuthHeader) {
+    try {
+      const port = process.env.PORT || "3100";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+      const checkRes = await fetch(
+        `http://localhost:${port}/api/issues/${issueId}`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      if (checkRes.ok) {
+        const issue = await checkRes.json() as { status?: string; identifier?: string };
+        if (issue.status === "todo") {
+          await fetch(
+            `http://localhost:${port}/api/issues/${issueId}`,
+            { method: "PATCH", headers, body: JSON.stringify({ status: "in_progress" }), signal: AbortSignal.timeout(5000) },
+          );
+          await onLog("stdout", `[openrouter] Auto-updated ${issue.identifier} from todo → in_progress\n`);
+        }
+      }
+    } catch {
+      // Best effort — don't fail the run for this
+    }
+  }
 
   await onLog("stdout", `[openrouter] Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s | ${totalIn}+${totalOut} tokens | $${totalCost.toFixed(4)}\n`);
 
