@@ -38,5 +38,6 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): timeout in seconds (default: 600)
 - maxTurns (number, optional): max conversation turns (default: 30)
+- desiredSkills (string[], optional): skills to load into prompt (e.g. ["xlsx", "pdf"]). The "paperclip" skill is always included.
 `,
 };

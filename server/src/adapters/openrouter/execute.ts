@@ -520,19 +520,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // ── Load skills (ephemeral — inject markdown into prompt) ──
-  // Only load the core Paperclip skill (API reference) and skip optional/large skills
-  // to keep prompts under control. Idle heartbeats skip all skills.
+  // Per-agent skill selection: each agent's adapterConfig.desiredSkills lists
+  // which skills to load. The "paperclip" skill (API reference) is always included.
+  // Idle heartbeats skip all skills to keep prompts fast.
   const hasTask = !!asString(context.issueId || context.taskId, "");
   const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills) ? config.paperclipRuntimeSkills as Array<{ key: string; runtimeName: string; source: string }> : [];
   const skillBlocks: string[] = [];
-  // Only load the core paperclip skill — it has the API reference agents need.
-  // Other skills (xlsx, pdf, doc-coauthoring etc) bloat the prompt without adding value
-  // since OpenRouter agents use native tools, not curl-based skill patterns.
-  const CORE_SKILLS = new Set(["paperclip"]);
+  const desiredSkillsRaw = config.desiredSkills;
+  const desiredSkills = new Set<string>(["paperclip"]); // always include core
+  if (Array.isArray(desiredSkillsRaw)) {
+    for (const s of desiredSkillsRaw) {
+      if (typeof s === "string" && s.trim()) desiredSkills.add(s.trim());
+    }
+  }
   if (hasTask) {
     for (const skill of runtimeSkills) {
       if (!skill.source) continue;
-      if (!CORE_SKILLS.has(skill.runtimeName)) continue;
+      // Match by runtimeName or key (supports both "xlsx" and "anthropics/skills/xlsx")
+      if (!desiredSkills.has(skill.runtimeName) && !desiredSkills.has(skill.key)) continue;
       try {
         const md = sanitize(await readFile(resolve(skill.source, "SKILL.md"), "utf-8"));
         if (md.trim()) {
