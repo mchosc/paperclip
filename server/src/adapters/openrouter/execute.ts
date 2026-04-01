@@ -707,11 +707,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       headers["Authorization"] = jwtAuthHeader;
       const assignedRes = await fetch(
-        `http://localhost:${port}/api/companies/${agent.companyId}/issues?assigneeAgentId=${agent.id}&status=todo&status=in_progress&status=blocked`,
+        `http://localhost:${port}/api/companies/${agent.companyId}/issues?assigneeAgentId=${agent.id}`,
         { headers, signal: AbortSignal.timeout(5000) },
       );
       if (assignedRes.ok) {
-        const assigned = await assignedRes.json() as Array<{ identifier?: string; title?: string; status?: string; description?: string }>;
+        const allAssigned = await assignedRes.json() as Array<{ identifier?: string; title?: string; status?: string; description?: string }>;
+        const assigned = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress" || i.status === "blocked");
         if (assigned.length > 0) {
           const lines = assigned.slice(0, 10).map(
             (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
