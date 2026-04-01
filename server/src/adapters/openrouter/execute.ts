@@ -14,6 +14,7 @@ import {
   ensureAbsoluteDirectory,
 } from "@paperclipai/adapter-utils/server-utils";
 import { readFile, writeFile as writeFileAsync, mkdir, readdir, lstat, symlink, readlink, unlink } from "node:fs/promises";
+
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve, dirname, relative } from "node:path";
@@ -519,14 +520,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // ── Sync skills to disk (same approach as claude_local) ──────
-  // Symlink desired skills into .skills/ in the agent workspace.
-  // Agent discovers and reads them via list_directory/read_file when needed.
-  const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills) ? config.paperclipRuntimeSkills as Array<{ key: string; runtimeName: string; source: string }> : [];
+  // ── Sync skills to disk ─────────────────────────────────────
+  // Skills are managed via the UI's Skills tab (syncSkills in skills.ts).
+  // Here we just ensure symlinks are current for this run.
+  const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills) ? config.paperclipRuntimeSkills as Array<{ key: string; runtimeName: string; source: string; required?: boolean }> : [];
   const desiredSkillsRaw = config.desiredSkills;
   const desiredSkills = new Set<string>(["paperclip"]); // always include core
   if (Array.isArray(desiredSkillsRaw)) {
     for (const s of desiredSkillsRaw) {
+      if (typeof s === "string" && s.trim()) desiredSkills.add(s.trim());
+    }
+  }
+  // Also include required skills
+  for (const skill of runtimeSkills) {
+    if (skill.required) desiredSkills.add(skill.key);
+  }
+  // Read desired skills from the sync preference (set by UI Skills tab)
+  const syncPref = config.paperclipSkillSync as Record<string, unknown> | undefined;
+  if (syncPref && Array.isArray(syncPref.desiredSkills)) {
+    for (const s of syncPref.desiredSkills) {
       if (typeof s === "string" && s.trim()) desiredSkills.add(s.trim());
     }
   }
@@ -539,7 +551,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const name of existing) {
       const link = resolve(skillsDir, name);
       try {
-        await readlink(link); // only remove symlinks, not real dirs
+        await readlink(link);
         await unlink(link);
       } catch { /* not a symlink — leave it */ }
     }
@@ -550,10 +562,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       try {
         await symlink(skill.source, resolve(skillsDir, skill.runtimeName));
         syncedSkillCount++;
-        await onLog("stdout", `[openrouter] Synced skill: ${skill.key}\n`);
-      } catch {
-        // Symlink failed (e.g. already exists as a dir) — skip
-      }
+      } catch { /* symlink failed — skip */ }
+    }
+    if (syncedSkillCount > 0) {
+      await onLog("stdout", `[openrouter] Synced ${syncedSkillCount} skill(s) to .skills/\n`);
     }
   } catch {
     // Skills dir creation failed — continue without skills

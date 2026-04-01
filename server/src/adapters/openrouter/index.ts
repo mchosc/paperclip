@@ -1,11 +1,14 @@
 import type { ServerAdapterModule } from "../types.js";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
+import { listOpenrouterSkills, syncOpenrouterSkills } from "./skills.js";
 
 export const openrouterAdapter: ServerAdapterModule = {
   type: "openrouter_local",
   execute,
   testEnvironment,
+  listSkills: listOpenrouterSkills,
+  syncSkills: syncOpenrouterSkills,
   models: [
     { id: "deepseek/deepseek-v3.2-speciale", label: "DeepSeek V3.2 Speciale" },
     { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2" },
