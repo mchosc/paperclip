@@ -203,7 +203,7 @@ async function executeToolCall(
   argsStr: string,
   cwd: string,
   onLog: AdapterExecutionContext["onLog"],
-  apiContext?: { port: string; authHeader?: string; companyId: string; shellEnv?: Record<string, string> },
+  apiContext?: { port: string; authHeader?: string; companyId: string; agentId?: string; runId?: string; shellEnv?: Record<string, string> },
 ): Promise<string> {
   let args: Record<string, string>;
   try {
@@ -378,8 +378,8 @@ async function executeToolCall(
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiContext.authHeader) headers["Authorization"] = apiContext.authHeader;
+      if (apiContext.runId) headers["X-Paperclip-Run-Id"] = apiContext.runId;
 
-      // Find issue by identifier
       const searchRes = await fetch(
         `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues?identifier=${encodeURIComponent(identifier)}`,
         { headers, signal: AbortSignal.timeout(5000) },
@@ -388,6 +388,11 @@ async function executeToolCall(
       const issues = await searchRes.json() as Array<{ id: string; identifier: string }>;
       const issue = issues.find(i => i.identifier === identifier);
       if (!issue) return `Issue ${identifier} not found`;
+
+      // Checkout first to claim ownership
+      await fetch(`http://localhost:${apiContext.port}/api/issues/${issue.id}/checkout`, {
+        method: "POST", headers, body: JSON.stringify({ agentId: apiContext.agentId, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000),
+      }).catch(() => {});
 
       const patch: Record<string, unknown> = {};
       if (args.status) patch.status = args.status;
@@ -411,8 +416,8 @@ async function executeToolCall(
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiContext.authHeader) headers["Authorization"] = apiContext.authHeader;
+      if (apiContext.runId) headers["X-Paperclip-Run-Id"] = apiContext.runId;
 
-      // Find issue by identifier
       const searchRes = await fetch(
         `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues?identifier=${encodeURIComponent(identifier)}`,
         { headers, signal: AbortSignal.timeout(5000) },
@@ -422,7 +427,11 @@ async function executeToolCall(
       const issue = issues.find(i => i.identifier === identifier);
       if (!issue) return `Issue ${identifier} not found`;
 
-      // Comments are added via PATCH /api/issues/:id with { comment: "text" }
+      // Checkout first to claim ownership
+      await fetch(`http://localhost:${apiContext.port}/api/issues/${issue.id}/checkout`, {
+        method: "POST", headers, body: JSON.stringify({ agentId: apiContext.agentId, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000),
+      }).catch(() => {});
+
       const res = await fetch(
         `http://localhost:${apiContext.port}/api/issues/${issue.id}`,
         { method: "PATCH", headers, body: JSON.stringify({ comment: args.body || "" }), signal: AbortSignal.timeout(5000) },
@@ -794,6 +803,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         port,
         authHeader: jwtAuthHeader,
         companyId: agent.companyId,
+        agentId: agent.id,
+        runId,
         shellEnv: {
           PAPERCLIP_AGENT_ID: agent.id,
           PAPERCLIP_COMPANY_ID: agent.companyId,
