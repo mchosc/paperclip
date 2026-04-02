@@ -723,9 +723,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "2. Stay focused on the assigned task. Do the actual work — do NOT create planning issues, coordination issues, progress check issues, or follow-up issues. Just do the work yourself.",
     "3. ONLY create new issues when explicitly delegating email to Hermes (title '[Email] subject'). Do NOT create subtasks, follow-up tasks, or backlog items on your own initiative.",
     "4. NEVER create duplicate issues. NEVER create issues based on old reports or files in your workspace. If something was already done, leave it alone.",
-    "5. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
-    "6. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
-    "7. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
+    "5. EMAIL ATTACHMENTS DO NOT EXIST. You cannot attach files to emails. When delegating email to Hermes, include the FULL report content in the issue description. Never say 'see attached' — paste the content inline.",
+    "6. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
+    "7. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
+    "8. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
   );
 
   // Point agent to skills directory (if any were synced)
