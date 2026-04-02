@@ -720,9 +720,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "",
     "RULES (in priority order):",
     "1. ISSUE STATUS IS MANDATORY: Before your run ends, you MUST call update_issue to set status (in_progress, done, or blocked). A run that does work but leaves the issue in 'todo' is a FAILED run. This is your #1 obligation.",
-    "2. Stay focused on the assigned task. Do the actual work — do NOT create coordination issues, progress check issues, or planning issues. Just do the work.",
-    "3. When delegating (e.g., email to Hermes), create ONE sub-issue with complete details. Do not create chains of delegation.",
-    "4. NEVER create duplicate issues. If you need something that was already requested in an existing issue, add a comment to that issue instead of creating a new one.",
+    "2. Stay focused on the assigned task. Do the actual work — do NOT create planning issues, coordination issues, progress check issues, or follow-up issues. Just do the work yourself.",
+    "3. ONLY create new issues when explicitly delegating email to Hermes (title '[Email] subject'). Do NOT create subtasks, follow-up tasks, or backlog items on your own initiative.",
+    "4. NEVER create duplicate issues. NEVER create issues based on old reports or files in your workspace. If something was already done, leave it alone.",
     "5. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "6. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
     "7. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
@@ -749,15 +749,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       if (assignedRes.ok) {
         const allAssigned = await assignedRes.json() as Array<{ id?: string; identifier?: string; title?: string; status?: string; description?: string }>;
-        const assigned = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress" || i.status === "blocked");
+        const assigned = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress");
         if (assigned.length > 0) {
           for (const i of assigned) {
             if (i.id && i.identifier && i.status) assignedIssueIds.push({ id: i.id, identifier: i.identifier, status: i.status });
           }
-          const lines = assigned.slice(0, 10).map(
+          const lines = assigned.slice(0, 3).map(
             (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
           );
-          assignedIssuesBlock = `\n## YOUR ASSIGNED ISSUES (${assigned.length} open)\nYou MUST work on these — pick the highest priority one and make progress.\n${lines.join("\n")}`;
+          assignedIssuesBlock = `\n## YOUR ASSIGNED ISSUES (${assigned.length} open)\nPick ONE issue and make direct progress on it. Do NOT create new issues, subtasks, or plans — just do the actual work on the existing issue.\n${lines.join("\n")}`;
           await onLog("stdout", `[openrouter] Found ${assigned.length} assigned issue(s)\n`);
         }
       }
