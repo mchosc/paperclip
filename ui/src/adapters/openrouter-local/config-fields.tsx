@@ -72,6 +72,38 @@ export function OpenRouterLocalConfigFields({
         </Field>
       )}
 
+      {/* Heartbeat model — edit mode only */}
+      {!isCreate && models && models.length > 0 && (
+        <Field label="Heartbeat model" hint="Cheapest model for idle heartbeats with no tasks. Saves costs on status checks.">
+          <select
+            value={eff("adapterConfig", "heartbeatModel", String(config.heartbeatModel ?? ""))}
+            onChange={(e) => mark("adapterConfig", "heartbeatModel", e.target.value || undefined)}
+            className={inputClass}
+          >
+            <option value="">Same as default model</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
+            ))}
+          </select>
+        </Field>
+      )}
+
+      {/* Complex task model — edit mode only */}
+      {!isCreate && models && models.length > 0 && (
+        <Field label="Complex task model" hint="Premium model for high-complexity tasks (triage score >= 7). Better reasoning for hard problems.">
+          <select
+            value={eff("adapterConfig", "complexModel", String(config.complexModel ?? ""))}
+            onChange={(e) => mark("adapterConfig", "complexModel", e.target.value || undefined)}
+            className={inputClass}
+          >
+            <option value="">Same as default model</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       {/* Desired skills — edit mode only */}
       {!isCreate && (
         <Field label="Skills" hint="Comma-separated skill names to load (e.g. xlsx,pdf,frontend-design). The 'paperclip' skill is always included.">

@@ -513,9 +513,14 @@ async function callOpenRouter(
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, context, onLog, onMeta, onSpawn } = ctx;
   const startedAt = Date.now();
-  const model = asString(config.model, DEFAULT_OPENROUTER_MODEL);
+  const defaultModel = asString(config.model, DEFAULT_OPENROUTER_MODEL);
+  const heartbeatModel = asString(config.heartbeatModel, defaultModel);
+  const complexModel = asString(config.complexModel, defaultModel);
   const timeoutSec = asNumber(config.timeoutSec, 600);
   const maxTurns = asNumber(config.maxTurns, 30);
+
+  // Model will be selected after we know the task context
+  let model = defaultModel;
 
   // ── Resolve workspace CWD (same pattern as claude_local) ───
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -720,6 +725,45 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
 
+
+  // ── Select model based on task context ──────────────────
+  if (!issueId && !assignedIssuesBlock) {
+    // Pure heartbeat, no tasks — use cheapest model
+    model = heartbeatModel;
+    await onLog("stdout", `[openrouter] Model: ${model} (heartbeat)\n`);
+  } else if (issueId && issueBlock) {
+    // Has an assigned task — check for triage complexity score in comments
+    try {
+      const port = process.env.PORT || "3100";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+      const commentsRes = await fetch(
+        `http://localhost:${port}/api/issues/${issueId}`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      if (commentsRes.ok) {
+        const issueData = await commentsRes.json() as { description?: string; comments?: Array<{ body?: string }> };
+        // Check for triage score in description or comments
+        const allText = (issueData.description ?? "") + " " + (issueData.comments ?? []).map(c => c.body ?? "").join(" ");
+        const scoreMatch = allText.match(/complexity:\s*(\d+)\/10/i);
+        if (scoreMatch) {
+          const score = parseInt(scoreMatch[1], 10);
+          if (score >= 7) {
+            model = complexModel;
+            await onLog("stdout", `[openrouter] Model: ${model} (complex, triage score ${score})\n`);
+          } else {
+            await onLog("stdout", `[openrouter] Model: ${model} (standard, triage score ${score})\n`);
+          }
+        } else {
+          await onLog("stdout", `[openrouter] Model: ${model} (standard, no triage score)\n`);
+        }
+      }
+    } catch {
+      await onLog("stdout", `[openrouter] Model: ${model} (standard, score check failed)\n`);
+    }
+  } else {
+    await onLog("stdout", `[openrouter] Model: ${model} (standard)\n`);
+  }
 
   if (onMeta) {
     await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });

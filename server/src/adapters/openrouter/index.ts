@@ -41,6 +41,8 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): timeout in seconds (default: 600)
 - maxTurns (number, optional): max conversation turns (default: 30)
+- heartbeatModel (string, optional): cheap model for idle heartbeats (default: same as model)
+- complexModel (string, optional): premium model for high-complexity tasks (triage score >= 7)
 - desiredSkills (string[], optional): skills to load into prompt (e.g. ["xlsx", "pdf"]). The "paperclip" skill is always included.
 `,
 };
