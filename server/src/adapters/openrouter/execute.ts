@@ -653,10 +653,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (res.ok) {
         const issue = await res.json() as { title?: string; description?: string; identifier?: string; status?: string };
 
-        // Skip cancelled/done issues — don't work on them
-        if (issue.status === "cancelled" || issue.status === "done") {
+        // Skip cancelled/done/blocked issues — don't work on them
+        if (issue.status === "cancelled" || issue.status === "done" || issue.status === "blocked") {
           await onLog("stdout", `[openrouter] Task ${issue.identifier} is ${issue.status} — skipping\n`);
-          return { exitCode: 0, signal: null, timedOut: false, usage: { inputTokens: 0, outputTokens: 0 }, summary: `Skipped ${issue.identifier} — already ${issue.status}` };
+          return { exitCode: 0, signal: null, timedOut: false, usage: { inputTokens: 0, outputTokens: 0 }, summary: `Skipped ${issue.identifier} — ${issue.status}` };
         }
 
         issueBlock = `\n## ASSIGNED TASK: ${issue.identifier || ""} ${issue.title || ""}\n${issue.description || ""}`;
