@@ -804,16 +804,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const port = process.env.PORT || "3100";
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
-      const commentsRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
-      if (commentsRes.ok) {
-        const issueData = await commentsRes.json() as { description?: string; comments?: Array<{ body?: string }> };
-        const allText = (issueData.description ?? "") + " " + (issueData.comments ?? []).map(c => c.body ?? "").join(" ");
-        const scoreMatch = allText.match(/complexity:\s*(\d+)\/10/i);
-        if (scoreMatch && parseInt(scoreMatch[1], 10) >= 7) {
+      const issueRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
+      if (issueRes.ok) {
+        const issueData = await issueRes.json() as { parentId?: string; description?: string; comments?: Array<{ body?: string }> };
+        // Subtask of a decomposed task → always use complex model
+        if (issueData.parentId) {
           model = complexModel;
-          await onLog("stdout", `[openrouter] Model: ${model} (complex, triage score ${scoreMatch[1]})\n`);
+          await onLog("stdout", `[openrouter] Model: ${model} (complex, subtask of decomposed parent)\n`);
         } else {
-          await onLog("stdout", `[openrouter] Model: ${model} (standard${scoreMatch ? `, triage score ${scoreMatch[1]}` : ""})\n`);
+          const allText = (issueData.description ?? "") + " " + (issueData.comments ?? []).map(c => c.body ?? "").join(" ");
+          const scoreMatch = allText.match(/complexity:\s*(\d+)\/10/i);
+          if (scoreMatch && parseInt(scoreMatch[1], 10) >= 7) {
+            model = complexModel;
+            await onLog("stdout", `[openrouter] Model: ${model} (complex, triage score ${scoreMatch[1]})\n`);
+          } else {
+            await onLog("stdout", `[openrouter] Model: ${model} (standard${scoreMatch ? `, triage score ${scoreMatch[1]}` : ""})\n`);
+          }
         }
       }
     } catch {
