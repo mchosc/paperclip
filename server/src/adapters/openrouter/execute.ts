@@ -203,7 +203,7 @@ async function executeToolCall(
   argsStr: string,
   cwd: string,
   onLog: AdapterExecutionContext["onLog"],
-  apiContext?: { port: string; authHeader?: string; companyId: string; agentId?: string; runId?: string; shellEnv?: Record<string, string> },
+  apiContext?: { port: string; authHeader?: string; companyId: string; agentId?: string; runId?: string; agentName?: string; projectId?: string; shellEnv?: Record<string, string> },
 ): Promise<string> {
   let args: Record<string, string>;
   try {
@@ -343,7 +343,8 @@ async function executeToolCall(
 
     // Allow email delegation for everyone, subtask creation only for managers
     const isEmailDelegation = title.startsWith("[Email]");
-    const isManager = ["ceo", "cto", "cfo", "cmo"].includes(agent.role);
+    const agentNameLower = (apiContext.agentName || "").toLowerCase();
+    const isManager = /^(ceo|cto|cfo|cmo)\b/.test(agentNameLower);
     if (!isEmailDelegation && !isManager) {
       return `BLOCKED: IC agents cannot create issues. Only email delegation is allowed (title must start with "[Email]"). Do the work yourself.`;
     }
@@ -419,6 +420,7 @@ async function executeToolCall(
 
       const issueBody: Record<string, unknown> = { title, description, status: "todo" };
       if (assigneeAgentId) issueBody.assigneeAgentId = assigneeAgentId;
+      if (apiContext.projectId) issueBody.projectId = apiContext.projectId;
 
       const res = await fetch(`http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues`, {
         method: "POST", headers, body: JSON.stringify(issueBody), signal: AbortSignal.timeout(5000),
@@ -682,6 +684,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } catch {}
 
   // ── Fetch issue context ────────────────────────────────────
+  let issueProjectId: string | undefined;
   if (issueId) {
     try {
       const port = process.env.PORT || "3100";
@@ -691,7 +694,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       {
       const res = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
       if (res.ok) {
-        const issue = await res.json() as { title?: string; description?: string; identifier?: string; status?: string };
+        const issue = await res.json() as { title?: string; description?: string; identifier?: string; status?: string; projectId?: string };
 
         // Skip cancelled/done/blocked issues — don't work on them
         if (issue.status === "cancelled" || issue.status === "done" || issue.status === "blocked") {
@@ -699,6 +702,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return { exitCode: 0, signal: null, timedOut: false, usage: { inputTokens: 0, outputTokens: 0 }, summary: `Skipped ${issue.identifier} — ${issue.status}` };
         }
 
+        if (issue.projectId) issueProjectId = issue.projectId;
         issueBlock = `\n## ASSIGNED TASK: ${issue.identifier || ""} ${issue.title || ""}\n${issue.description || ""}`;
         await onLog("stdout", `[openrouter] Task: ${issue.identifier} ${issue.title}\n`);
 
@@ -711,11 +715,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           );
           if (childRes.ok) {
             const children = await childRes.json() as Array<{ identifier?: string; title?: string; status?: string; assigneeAgentId?: string }>;
-            const openChildren = children.filter(c => c.status !== "done" && c.status !== "cancelled");
-            if (openChildren.length > 0) {
-              const childList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
-              issueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are handling the work:\n${childList}\n\nYour job: check if all subtasks are done. If yes, mark this parent issue as done. If not, wait.`;
-              await onLog("stdout", `[openrouter] Task has ${openChildren.length} open subtask(s) — coordination mode\n`);
+            if (children.length > 0) {
+              const openChildren = children.filter(c => c.status !== "done" && c.status !== "cancelled");
+              const allDone = openChildren.length === 0;
+              const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
+              if (allDone) {
+                // All subtasks complete — agent should synthesize findings and close
+                issueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Mark this issue as done using update_issue`;
+                await onLog("stdout", `[openrouter] All ${children.length} subtask(s) complete — synthesis mode\n`);
+              } else {
+                const openList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
+                issueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are still in progress:\n${openList}\n\nDo NOT mark this issue as done — subtasks are still being worked on.\nYour only job: update_issue with a brief status summary of subtask progress, then stop.`;
+                await onLog("stdout", `[openrouter] Task has ${openChildren.length} open subtask(s) — coordination mode\n`);
+              }
             }
           }
         } catch { /* best effort */ }
@@ -814,16 +826,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       if (assignedRes.ok) {
         const allAssigned = await assignedRes.json() as Array<{ id?: string; identifier?: string; title?: string; status?: string; description?: string; parentId?: string }>;
-        const assigned = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress");
+        const pending = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress");
+        // Check subtasks for each assigned issue to determine mode
+        const assigned: typeof pending = [];
+        const synthesisIds = new Set<string>(); // parent issues with all subtasks done — need synthesis
+        for (const i of pending) {
+          if (i.id) {
+            try {
+              const childRes = await fetch(
+                `http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${i.id}`,
+                { headers, signal: AbortSignal.timeout(3000) },
+              );
+              if (childRes.ok) {
+                const children = await childRes.json() as Array<{ identifier?: string; title?: string; status?: string }>;
+                if (children.length > 0) {
+                  const hasOpen = children.some(c => c.status !== "done" && c.status !== "cancelled");
+                  if (hasOpen) {
+                    await onLog("stdout", `[openrouter] Skipping ${i.identifier} from heartbeat — has open subtasks\n`);
+                    continue;
+                  }
+                  // All subtasks done — include for synthesis
+                  synthesisIds.add(i.identifier || "");
+                }
+              }
+            } catch { /* best effort — include it */ }
+          }
+          assigned.push(i);
+        }
         if (assigned.length > 0) {
           for (const i of assigned) {
             if (i.id && i.identifier && i.status) assignedIssueIds.push({ id: i.id, identifier: i.identifier, status: i.status });
             if (i.parentId) hasSubtaskAssigned = true;
           }
-          const lines = assigned.slice(0, 3).map(
-            (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
-          );
-          assignedIssuesBlock = `\n## YOUR ASSIGNED ISSUES (${assigned.length} open)\nPick ONE issue and make direct progress on it. Do NOT create new issues, subtasks, or plans — just do the actual work on the existing issue.\n${lines.join("\n")}`;
+          // Prioritise synthesis tasks — put them first
+          const synthesisIssues = assigned.filter(i => synthesisIds.has(i.identifier || ""));
+          const regularIssues = assigned.filter(i => !synthesisIds.has(i.identifier || ""));
+          if (synthesisIssues.length > 0) {
+            const synthLines = synthesisIssues.map(
+              (i) => `- **${i.identifier}** ${i.title} — ALL SUBTASKS COMPLETE, needs synthesis`
+            );
+            const regularLines = regularIssues.slice(0, 3).map(
+              (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
+            );
+            assignedIssuesBlock = `\n## PRIORITY: SYNTHESISE COMPLETED SUBTASKS\nThe following parent issue(s) have ALL subtasks done. Pick the first one and:\n1. Read work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment using add_comment\n3. Mark the issue as done using update_issue\n${synthLines.join("\n")}`;
+            if (regularLines.length > 0) {
+              assignedIssuesBlock += `\n\n## OTHER ASSIGNED ISSUES\n${regularLines.join("\n")}`;
+            }
+          } else {
+            const lines = assigned.slice(0, 3).map(
+              (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
+            );
+            assignedIssuesBlock = `\n## YOUR ASSIGNED ISSUES (${assigned.length} open)\nPick ONE issue and make direct progress on it. Do NOT create new issues, subtasks, or plans — just do the actual work on the existing issue.\n${lines.join("\n")}`;
+          }
           await onLog("stdout", `[openrouter] Found ${assigned.length} assigned issue(s)\n`);
         }
       }
@@ -940,6 +994,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         companyId: agent.companyId,
         agentId: agent.id,
         runId,
+        agentName: agent.name,
+        projectId: issueProjectId,
         shellEnv: {
           PAPERCLIP_AGENT_ID: agent.id,
           PAPERCLIP_COMPANY_ID: agent.companyId,
@@ -999,8 +1055,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // ── Auto-close assigned issues from heartbeat runs ──────
-  // When no explicit issueId but we injected assigned issues, auto-close them too.
+  // ── Auto-advance assigned issues from heartbeat runs ──────
+  // todo → in_progress always. in_progress → done ONLY if agent has no open subtasks
+  // (prevents closing issues the agent never actually worked on).
   if (!issueId && assignedIssueIds.length > 0 && jwtAuthHeader) {
     const port = process.env.PORT || "3100";
     const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: jwtAuthHeader, "X-Paperclip-Run-Id": runId };
@@ -1009,21 +1066,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const checkRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { headers, signal: AbortSignal.timeout(5000) });
         if (!checkRes.ok) continue;
         const current = await checkRes.json() as { status?: string };
-        if (current.status === "todo" || current.status === "in_progress") {
-          // Checkout the issue first so the PATCH succeeds
+        if (current.status === "todo") {
           await fetch(`http://localhost:${port}/api/issues/${ai.id}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
-          const newStatus = current.status === "todo" ? "in_progress" : "done";
-          const body: Record<string, unknown> = { status: newStatus };
-          if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
-          const patchRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { method: "PATCH", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+          const patchRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { method: "PATCH", headers, body: JSON.stringify({ status: "in_progress" }), signal: AbortSignal.timeout(5000) });
           if (patchRes.ok) {
-            await onLog("stdout", `[openrouter] Auto-${newStatus === "done" ? "closed" : "updated"} ${ai.identifier} → ${newStatus}\n`);
-          } else {
-            await onLog("stderr", `[openrouter] Auto-close FAILED ${ai.identifier}: ${patchRes.status} ${await patchRes.text().catch(() => "")}\n`);
+            await onLog("stdout", `[openrouter] Auto-updated ${ai.identifier} → in_progress\n`);
           }
         }
+        // in_progress issues are NOT auto-closed from heartbeats —
+        // the agent must explicitly mark done (via synthesis mode for parents, or update_issue for regular issues)
       } catch (err) {
-        await onLog("stderr", `[openrouter] Auto-close error: ${err instanceof Error ? err.message : String(err)}\n`).catch(() => {});
+        await onLog("stderr", `[openrouter] Auto-advance error: ${err instanceof Error ? err.message : String(err)}\n`).catch(() => {});
       }
     }
   }
