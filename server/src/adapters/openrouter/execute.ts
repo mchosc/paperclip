@@ -651,7 +651,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       {
       const res = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
       if (res.ok) {
-        const issue = await res.json() as { title?: string; description?: string; identifier?: string };
+        const issue = await res.json() as { title?: string; description?: string; identifier?: string; status?: string };
+
+        // Skip cancelled/done issues — don't work on them
+        if (issue.status === "cancelled" || issue.status === "done") {
+          await onLog("stdout", `[openrouter] Task ${issue.identifier} is ${issue.status} — skipping\n`);
+          return { exitCode: 0, signal: null, timedOut: false, usage: { inputTokens: 0, outputTokens: 0 }, summary: `Skipped ${issue.identifier} — already ${issue.status}` };
+        }
+
         issueBlock = `\n## ASSIGNED TASK: ${issue.identifier || ""} ${issue.title || ""}\n${issue.description || ""}`;
         await onLog("stdout", `[openrouter] Task: ${issue.identifier} ${issue.title}\n`);
 
