@@ -340,6 +340,14 @@ async function executeToolCall(
     const title = args.title || "Untitled";
     const description = args.description || "";
     const assigneeName = args.assignee_agent_name || "";
+
+    // Allow email delegation for everyone, subtask creation only for managers
+    const isEmailDelegation = title.startsWith("[Email]");
+    const isManager = ["ceo", "cto", "cfo", "cmo"].includes(agent.role);
+    if (!isEmailDelegation && !isManager) {
+      return `BLOCKED: IC agents cannot create issues. Only email delegation is allowed (title must start with "[Email]"). Do the work yourself.`;
+    }
+
     await onLog("stdout", `[openrouter] Creating issue: ${title}${assigneeName ? ` (→ ${assigneeName})` : ""}\n`);
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
