@@ -767,6 +767,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // assigned issues so agents don't ignore pending work.
   let assignedIssuesBlock = "";
   const assignedIssueIds: Array<{ id: string; identifier: string; status: string }> = [];
+  let hasSubtaskAssigned = false;
   if (!issueId && jwtAuthHeader) {
     try {
       const port = process.env.PORT || "3100";
@@ -777,11 +778,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         { headers, signal: AbortSignal.timeout(5000) },
       );
       if (assignedRes.ok) {
-        const allAssigned = await assignedRes.json() as Array<{ id?: string; identifier?: string; title?: string; status?: string; description?: string }>;
+        const allAssigned = await assignedRes.json() as Array<{ id?: string; identifier?: string; title?: string; status?: string; description?: string; parentId?: string }>;
         const assigned = allAssigned.filter(i => i.status === "todo" || i.status === "in_progress");
         if (assigned.length > 0) {
           for (const i of assigned) {
             if (i.id && i.identifier && i.status) assignedIssueIds.push({ id: i.id, identifier: i.identifier, status: i.status });
+            if (i.parentId) hasSubtaskAssigned = true;
           }
           const lines = assigned.slice(0, 3).map(
             (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
@@ -799,6 +801,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!issueId && !assignedIssuesBlock) {
     model = heartbeatModel;
     await onLog("stdout", `[openrouter] Model: ${model} (heartbeat)\n`);
+  } else if (!issueId && hasSubtaskAssigned) {
+    // Heartbeat picked up a subtask of a decomposed task — use complex model
+    model = complexModel;
+    await onLog("stdout", `[openrouter] Model: ${model} (complex, assigned subtask)\n`);
   } else if (issueId && issueBlock) {
     try {
       const port = process.env.PORT || "3100";
