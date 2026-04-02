@@ -10,17 +10,24 @@ export const openrouterAdapter: ServerAdapterModule = {
   listSkills: listOpenrouterSkills,
   syncSkills: syncOpenrouterSkills,
   models: [
-    { id: "deepseek/deepseek-v3.2-speciale", label: "DeepSeek V3.2 Speciale" },
+    // Premium
+    { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { id: "anthropic/claude-opus-4-6", label: "Claude Opus 4.6" },
+    { id: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
+    { id: "qwen/qwen3.5-plus", label: "Qwen 3.5 Plus" },
+    { id: "qwen/qwen3.5-plus-02-15", label: "Qwen 3.5 Plus (02-15)" },
+    { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    // Standard
     { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2" },
+    { id: "deepseek/deepseek-v3.2-speciale", label: "DeepSeek V3.2 Speciale" },
     { id: "deepseek/deepseek-r1", label: "DeepSeek R1" },
+    { id: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
     { id: "minimax/minimax-m2.7", label: "MiniMax M2.7" },
     { id: "minimax/minimax-m2.5", label: "MiniMax M2.5" },
-    { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    // Cheap (good for heartbeats)
+    { id: "meta-llama/llama-4-scout", label: "Llama 4 Scout (cheapest)" },
     { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-    { id: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
-    { id: "qwen/qwen3.5-plus", label: "Qwen 3.5 Plus" },
-    { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { id: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
+    { id: "deepseek/deepseek-chat", label: "DeepSeek Chat" },
   ],
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: `# openrouter_local agent configuration
