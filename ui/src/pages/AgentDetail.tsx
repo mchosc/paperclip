@@ -41,6 +41,7 @@ import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
+import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
@@ -222,7 +223,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget" | (string & {});
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
@@ -556,6 +557,23 @@ export function AgentDetail() {
     enabled: canFetchAgent,
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
+  const {
+    slots: pluginDetailSlots,
+  } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: resolvedCompanyId ?? undefined,
+    enabled: !!resolvedCompanyId,
+  });
+  const pluginTabItems = useMemo(
+    () => pluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}`,
+      label: slot.displayName,
+      slot,
+    })),
+    [pluginDetailSlots],
+  );
+  const activePluginTab = pluginTabItems.find((item) => item.value === activeView) ?? null;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
@@ -928,6 +946,7 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
+              ...pluginTabItems,
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1062,6 +1081,19 @@ export function AgentDetail() {
           />
         </div>
       ) : null}
+
+      {activePluginTab && agent && (
+        <PluginSlotMount
+          slot={activePluginTab.slot}
+          context={{
+            companyId: resolvedCompanyId,
+            companyPrefix: null,
+            entityId: agent.id,
+            entityType: "agent",
+          }}
+          missingBehavior="placeholder"
+        />
+      )}
     </div>
   );
 }
