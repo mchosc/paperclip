@@ -726,9 +726,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
 
 
-  if (onMeta) {
-    await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });
-  }
+  // onMeta is called after model selection (below) so it reports the correct model
 
   // ── Build system prompt ────────────────────────────────────
   const systemParts: string[] = [];
@@ -823,6 +821,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   } else {
     await onLog("stdout", `[openrouter] Model: ${model} (standard)\n`);
+  }
+
+  if (onMeta) {
+    await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });
   }
 
   const userParts: string[] = [];
