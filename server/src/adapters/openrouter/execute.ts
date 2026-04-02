@@ -817,6 +817,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const port = process.env.PORT || "3100";
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+      headers["X-Paperclip-Run-Id"] = runId;
       const checkRes = await fetch(
         `http://localhost:${port}/api/issues/${issueId}`,
         { headers, signal: AbortSignal.timeout(5000) },
@@ -848,7 +849,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // When no explicit issueId but we injected assigned issues, auto-close them too.
   if (!issueId && assignedIssueIds.length > 0 && jwtAuthHeader) {
     const port = process.env.PORT || "3100";
-    const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: jwtAuthHeader };
+    const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: jwtAuthHeader, "X-Paperclip-Run-Id": runId };
     for (const ai of assignedIssueIds) {
       try {
         // Re-check current status (agent may have updated it during the run)
