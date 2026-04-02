@@ -347,6 +347,10 @@ async function executeToolCall(
     if (!isEmailDelegation && !isManager) {
       return `BLOCKED: IC agents cannot create issues. Only email delegation is allowed (title must start with "[Email]"). Do the work yourself.`;
     }
+    // Hermes is email-only — block assigning non-email tasks to him
+    if (assigneeName.toLowerCase().includes("hermes") && !isEmailDelegation) {
+      return `BLOCKED: Hermes only handles email tasks. Title must start with "[Email]". For code/technical work, assign to the appropriate engineer (Amelia, Winston, etc.).`;
+    }
 
     await onLog("stdout", `[openrouter] Creating issue: ${title}${assigneeName ? ` (→ ${assigneeName})` : ""}\n`);
     try {
