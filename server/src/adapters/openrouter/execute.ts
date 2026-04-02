@@ -983,9 +983,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           const patchRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { method: "PATCH", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
           if (patchRes.ok) {
             await onLog("stdout", `[openrouter] Auto-${newStatus === "done" ? "closed" : "updated"} ${ai.identifier} → ${newStatus}\n`);
+          } else {
+            await onLog("stderr", `[openrouter] Auto-close FAILED ${ai.identifier}: ${patchRes.status} ${await patchRes.text().catch(() => "")}\n`);
           }
         }
-      } catch { /* best effort */ }
+      } catch (err) {
+        await onLog("stderr", `[openrouter] Auto-close error: ${err instanceof Error ? err.message : String(err)}\n`).catch(() => {});
+      }
     }
   }
 
