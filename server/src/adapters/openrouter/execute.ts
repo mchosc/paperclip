@@ -826,7 +826,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const issue = await checkRes.json() as { status?: string; identifier?: string };
         if (issue.status === "todo" || issue.status === "in_progress") {
           // Checkout first so PATCH succeeds
-          await fetch(`http://localhost:${port}/api/issues/${issueId}/checkout`, { method: "POST", headers, body: JSON.stringify({}), signal: AbortSignal.timeout(5000) }).catch(() => {});
+          await fetch(`http://localhost:${port}/api/issues/${issueId}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
           const newStatus = issue.status === "todo" ? "in_progress" : "done";
           const body: Record<string, unknown> = { status: newStatus };
           if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
@@ -853,7 +853,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const current = await checkRes.json() as { status?: string };
         if (current.status === "todo" || current.status === "in_progress") {
           // Checkout the issue first so the PATCH succeeds
-          await fetch(`http://localhost:${port}/api/issues/${ai.id}/checkout`, { method: "POST", headers, body: JSON.stringify({}), signal: AbortSignal.timeout(5000) }).catch(() => {});
+          await fetch(`http://localhost:${port}/api/issues/${ai.id}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
           const newStatus = current.status === "todo" ? "in_progress" : "done";
           const body: Record<string, unknown> = { status: newStatus };
           if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
