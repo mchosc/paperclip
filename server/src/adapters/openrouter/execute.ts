@@ -356,6 +356,32 @@ async function executeToolCall(
         }
       }
 
+      // Dedup: check if a similar open issue already exists
+      const targetAgentId = assigneeAgentId || apiContext.agentId;
+      if (targetAgentId) {
+        try {
+          const existingRes = await fetch(
+            `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues?assigneeAgentId=${targetAgentId}`,
+            { headers, signal: AbortSignal.timeout(5000) },
+          );
+          if (existingRes.ok) {
+            const existing = await existingRes.json() as Array<{ id: string; identifier?: string; title?: string; status?: string }>;
+            const openIssues = existing.filter(i => i.status === "todo" || i.status === "in_progress" || i.status === "blocked");
+            const titleWords = new Set(title.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+            for (const issue of openIssues) {
+              if (!issue.title) continue;
+              const existingWords = new Set(issue.title.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+              const overlap = [...titleWords].filter(w => existingWords.has(w)).length;
+              const similarity = titleWords.size > 0 ? overlap / titleWords.size : 0;
+              if (similarity >= 0.6) {
+                await onLog("stdout", `[openrouter] Dedup: similar issue exists ${issue.identifier}\n`);
+                return `Similar issue already exists: ${issue.identifier} "${issue.title}" [${issue.status}]. Add a comment to it instead of creating a duplicate.`;
+              }
+            }
+          }
+        } catch { /* dedup is best-effort */ }
+      }
+
       const issueBody: Record<string, unknown> = { title, description, status: "todo" };
       if (assigneeAgentId) issueBody.assigneeAgentId = assigneeAgentId;
 
@@ -696,9 +722,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "1. ISSUE STATUS IS MANDATORY: Before your run ends, you MUST call update_issue to set status (in_progress, done, or blocked). A run that does work but leaves the issue in 'todo' is a FAILED run. This is your #1 obligation.",
     "2. Stay focused on the assigned task. Do the actual work — do NOT create coordination issues, progress check issues, or planning issues. Just do the work.",
     "3. When delegating (e.g., email to Hermes), create ONE sub-issue with complete details. Do not create chains of delegation.",
-    "4. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
-    "5. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
-    "6. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
+    "4. NEVER create duplicate issues. If you need something that was already requested in an existing issue, add a comment to that issue instead of creating a new one.",
+    "5. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
+    "6. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
+    "7. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
   );
 
   // Point agent to skills directory (if any were synced)
