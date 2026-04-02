@@ -889,14 +889,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (checkRes.ok) {
         const issue = await checkRes.json() as { status?: string; identifier?: string };
         if (issue.status === "todo" || issue.status === "in_progress") {
-          // Checkout first so PATCH succeeds
+          // Don't auto-close to done if there are open subtasks
+          let hasOpenSubtasks = false;
+          if (issue.status === "in_progress") {
+            try {
+              const childRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
+              if (childRes.ok) {
+                const children = await childRes.json() as Array<{ status?: string }>;
+                hasOpenSubtasks = children.some(c => c.status !== "done" && c.status !== "cancelled");
+              }
+            } catch { /* best effort */ }
+          }
           await fetch(`http://localhost:${port}/api/issues/${issueId}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
-          const newStatus = issue.status === "todo" ? "in_progress" : "done";
-          const body: Record<string, unknown> = { status: newStatus };
-          if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
-          const patchRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { method: "PATCH", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
-          if (patchRes.ok) {
-            await onLog("stdout", `[openrouter] Auto-${newStatus === "done" ? "closed" : "updated"} ${issue.identifier} → ${newStatus}\n`);
+          const newStatus = issue.status === "todo" ? "in_progress" : (hasOpenSubtasks ? "in_progress" : "done");
+          if (newStatus !== issue.status) {
+            const body: Record<string, unknown> = { status: newStatus };
+            if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
+            const patchRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { method: "PATCH", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+            if (patchRes.ok) {
+              await onLog("stdout", `[openrouter] Auto-${newStatus === "done" ? "closed" : "updated"} ${issue.identifier} → ${newStatus}\n`);
+            }
           }
         }
       }
