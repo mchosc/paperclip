@@ -347,9 +347,32 @@ async function executeToolCall(
     if (!isEmailDelegation && !isManager) {
       return `BLOCKED: IC agents cannot create issues. Only email delegation is allowed (title must start with "[Email]"). Do the work yourself.`;
     }
-    // Hermes is email-only — block assigning non-email tasks to him
+    // Hermes is email-only — auto-reassign non-email tasks using keyword routing
     if (assigneeName.toLowerCase().includes("hermes") && !isEmailDelegation) {
-      return `BLOCKED: Hermes only handles email tasks. Title must start with "[Email]". For code/technical work, assign to the appropriate engineer (Amelia, Winston, etc.).`;
+      const ROUTING: Array<[RegExp, string]> = [
+        [/security|audit|vulnerab|CVE/i, "Sentinel"],
+        [/architect|design|system|refactor/i, "Winston"],
+        [/code|implement|build|feature|bug|fix|engineer|index|schema/i, "Amelia"],
+        [/test|QA|regression|coverage/i, "Murat"],
+        [/UX|UI|wireframe|usability/i, "Sally"],
+        [/tax|compliance|filing|IGIC/i, "Audra"],
+        [/pricing|cost|margin|budget|financial/i, "CFO - Oro"],
+        [/SEO|keyword/i, "Atlas"],
+        [/content|editorial/i, "Iris"],
+        [/competitor|market.*research/i, "Rex"],
+        [/legal|terms|policy|contract/i, "Chaz"],
+        [/document|write|spec/i, "Paige"],
+        [/research|investigate|analyze/i, "Mary"],
+        [/product|roadmap|prioriti/i, "John"],
+      ];
+      let corrected = "";
+      for (const [pattern, name] of ROUTING) {
+        if (pattern.test(title)) { corrected = name; break; }
+      }
+      if (corrected) {
+        args.assignee_agent_name = corrected;
+        await onLog("stdout", `[openrouter] Hermes redirect: "${title}" → ${corrected}\n`);
+      }
     }
 
     await onLog("stdout", `[openrouter] Creating issue: ${title}${assigneeName ? ` (→ ${assigneeName})` : ""}\n`);
