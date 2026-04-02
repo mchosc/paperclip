@@ -662,6 +662,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         issueBlock = `\n## ASSIGNED TASK: ${issue.identifier || ""} ${issue.title || ""}\n${issue.description || ""}`;
         await onLog("stdout", `[openrouter] Task: ${issue.identifier} ${issue.title}\n`);
 
+        // ── Check for existing subtasks ─────────────────────
+        // If this issue has been decomposed into subtasks, tell the agent to coordinate, not redo the work
+        try {
+          const childRes = await fetch(
+            `http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${issueId}`,
+            { headers, signal: AbortSignal.timeout(5000) },
+          );
+          if (childRes.ok) {
+            const children = await childRes.json() as Array<{ identifier?: string; title?: string; status?: string; assigneeAgentId?: string }>;
+            const openChildren = children.filter(c => c.status !== "done" && c.status !== "cancelled");
+            if (openChildren.length > 0) {
+              const childList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
+              issueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are handling the work:\n${childList}\n\nYour job: check if all subtasks are done. If yes, mark this parent issue as done. If not, wait.`;
+              await onLog("stdout", `[openrouter] Task has ${openChildren.length} open subtask(s) — coordination mode\n`);
+            }
+          }
+        } catch { /* best effort */ }
+
         // ── Fetch related/referenced issues ──────────────────
         // Scan description for patterns like "Related: ANI-100, ANI-131" or "See: ANI-100" or "Context: ANI-100"
         const desc = issue.description || "";
