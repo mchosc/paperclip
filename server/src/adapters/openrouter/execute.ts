@@ -448,9 +448,14 @@ async function executeToolCall(
         { headers, signal: AbortSignal.timeout(5000) },
       );
       if (!searchRes.ok) return `Failed to find issue ${identifier}: ${searchRes.status}`;
-      const issues = await searchRes.json() as Array<{ id: string; identifier: string }>;
+      const issues = await searchRes.json() as Array<{ id: string; identifier: string; status?: string }>;
       const issue = issues.find(i => i.identifier === identifier);
       if (!issue) return `Issue ${identifier} not found`;
+
+      // Skip no-op updates (prevents spam notifications)
+      if (args.status && issue.status === args.status && !args.title && !args.description) {
+        return `Issue ${identifier} is already ${args.status} — no update needed.`;
+      }
 
       // Checkout first to claim ownership
       await fetch(`http://localhost:${apiContext.port}/api/issues/${issue.id}/checkout`, {
