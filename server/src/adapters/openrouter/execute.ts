@@ -555,6 +555,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const complexModel = asString(config.complexModel, defaultModel);
   const timeoutSec = asNumber(config.timeoutSec, 600);
   const maxTurns = asNumber(config.maxTurns, 30);
+  const maxChainIssues = asNumber(config.maxChainIssues, 5);
 
   // Model will be selected after we know the task context
   let model = defaultModel;
@@ -721,7 +722,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
               if (allDone) {
                 // All subtasks complete — agent should synthesize findings and close
-                issueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Mark this issue as done using update_issue`;
+                issueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Re-read the original task description above — if it asks for follow-up actions (e.g. sending an email, creating a document), do them now. To send an email, create an issue titled "[Email] ..." and assign it to Hermes.\n4. Mark this issue as done using update_issue`;
                 await onLog("stdout", `[openrouter] All ${children.length} subtask(s) complete — synthesis mode\n`);
               } else {
                 const openList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
@@ -813,7 +814,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // When there's no issueId in context (heartbeat/on_demand), check for
   // assigned issues so agents don't ignore pending work.
   let assignedIssuesBlock = "";
-  const assignedIssueIds: Array<{ id: string; identifier: string; status: string }> = [];
+  const assignedIssueIds: Array<{ id: string; identifier: string; status: string; title: string; description: string; parentId?: string; isSynthesis: boolean }> = [];
   let hasSubtaskAssigned = false;
   if (!issueId && jwtAuthHeader) {
     try {
@@ -855,7 +856,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         if (assigned.length > 0) {
           for (const i of assigned) {
-            if (i.id && i.identifier && i.status) assignedIssueIds.push({ id: i.id, identifier: i.identifier, status: i.status });
+            if (i.id && i.identifier && i.status) assignedIssueIds.push({ id: i.id, identifier: i.identifier, status: i.status, title: i.title || "", description: i.description || "", parentId: i.parentId || undefined, isSynthesis: synthesisIds.has(i.identifier || "") });
             if (i.parentId) hasSubtaskAssigned = true;
           }
           // Prioritise synthesis tasks — put them first
@@ -868,7 +869,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             const regularLines = regularIssues.slice(0, 3).map(
               (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
             );
-            assignedIssuesBlock = `\n## PRIORITY: SYNTHESISE COMPLETED SUBTASKS\nThe following parent issue(s) have ALL subtasks done. Pick the first one and:\n1. Read work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment using add_comment\n3. Mark the issue as done using update_issue\n${synthLines.join("\n")}`;
+            assignedIssuesBlock = `\n## PRIORITY: SYNTHESISE COMPLETED SUBTASKS\nThe following parent issue(s) have ALL subtasks done. Pick the first one and:\n1. Read work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment using add_comment\n3. Re-read the original task description — if it asks for follow-up actions (e.g. sending an email), do them now. To send an email, create an issue titled "[Email] ..." and assign it to Hermes.\n4. Mark the issue as done using update_issue\n${synthLines.join("\n")}`;
             if (regularLines.length > 0) {
               assignedIssuesBlock += `\n\n## OTHER ASSIGNED ISSUES\n${regularLines.join("\n")}`;
             }
@@ -886,202 +887,326 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // ── Select model based on task context ──────────────────
-  if (!issueId && !assignedIssuesBlock) {
-    model = heartbeatModel;
-    await onLog("stdout", `[openrouter] Model: ${model} (heartbeat)\n`);
-  } else if (!issueId && hasSubtaskAssigned) {
-    // Heartbeat picked up a subtask of a decomposed task — use complex model
-    model = complexModel;
-    await onLog("stdout", `[openrouter] Model: ${model} (complex, assigned subtask)\n`);
-  } else if (issueId && issueBlock) {
-    try {
-      const port = process.env.PORT || "3100";
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
-      const issueRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
-      if (issueRes.ok) {
-        const issueData = await issueRes.json() as { parentId?: string; description?: string; comments?: Array<{ body?: string }> };
-        // Subtask of a decomposed task → always use complex model
-        if (issueData.parentId) {
-          model = complexModel;
-          await onLog("stdout", `[openrouter] Model: ${model} (complex, subtask of decomposed parent)\n`);
-        } else {
-          const allText = (issueData.description ?? "") + " " + (issueData.comments ?? []).map(c => c.body ?? "").join(" ");
-          const scoreMatch = allText.match(/complexity:\s*(\d+)\/10/i);
-          if (scoreMatch && parseInt(scoreMatch[1], 10) >= 7) {
-            model = complexModel;
-            await onLog("stdout", `[openrouter] Model: ${model} (complex, triage score ${scoreMatch[1]})\n`);
-          } else {
-            await onLog("stdout", `[openrouter] Model: ${model} (standard${scoreMatch ? `, triage score ${scoreMatch[1]}` : ""})\n`);
-          }
-        }
-      }
-    } catch {
-      await onLog("stdout", `[openrouter] Model: ${model} (standard)\n`);
-    }
-  } else {
-    await onLog("stdout", `[openrouter] Model: ${model} (standard)\n`);
+  // ── Build chain queue for heartbeat runs ─────────────────
+  // For heartbeat runs with assigned issues, chain through them sequentially.
+  // For direct-assignment runs (issueId set), no chaining — single issue.
+  const chainQueue = (!issueId && assignedIssueIds.length > 0)
+    ? assignedIssueIds.slice(0, maxChainIssues)
+    : [];
+  const isChainedRun = chainQueue.length > 1;
+  let globalTurn = 0;
+  const chainSummaries: string[] = [];
+
+  if (isChainedRun) {
+    await onLog("stdout", `[openrouter] Chaining ${chainQueue.length} issues in this run\n`);
   }
 
-  if (onMeta) {
-    await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });
-  }
-
-  const userParts: string[] = [];
-  if (renderedBootstrap) userParts.push(renderedBootstrap);
-  userParts.push(renderedPrompt);
-  if (issueBlock) userParts.push(issueBlock);
-  if (assignedIssuesBlock) userParts.push(assignedIssuesBlock);
-  if (!issueBlock && !assignedIssuesBlock && (wakeReason === "heartbeat_timer" || !wakeReason)) {
-    userParts.push("\nThis is a routine heartbeat. You have no assigned tasks. Report status briefly and stop.");
-  }
-
-  const messages: ChatMessage[] = [
-    { role: "system", content: systemParts.join("\n") },
-    { role: "user", content: userParts.join("\n\n") },
-  ];
-
-  await onLog("stdout", `[openrouter] Starting (model: ${model}, cwd: ${cwd})\n`);
-
-  // ── Conversation loop ──────────────────────────────────────
+  // ══════════════════════════════════════════════════════════
+  // ── Issue chain loop ──────────────────────────────────────
+  // For heartbeat runs with multiple assigned issues, chain through them
+  // sequentially in a single run. For direct-assignment or pure heartbeat
+  // runs, the loop executes exactly once — zero behavior change.
+  // ══════════════════════════════════════════════════════════
+  const chainIterations = chainQueue.length > 0 ? chainQueue.length : 1;
   let totalIn = 0, totalOut = 0, totalCost = 0, lastMessage = "";
   let resolvedModel = model;
+  let chainTimedOut = false;
+  let chainErrorMessage: string | undefined;
 
-  for (let turn = 0; turn < maxTurns; turn++) {
+  for (let chainIdx = 0; chainIdx < chainIterations; chainIdx++) {
+    // ── Check shared budgets before starting next issue ──────
+    if (globalTurn >= maxTurns) {
+      await onLog("stdout", `[openrouter] Chain: turn budget exhausted (${globalTurn}/${maxTurns}), stopping\n`);
+      break;
+    }
     if (Date.now() - startedAt > timeoutSec * 1000) {
-      return { exitCode: null, signal: null, timedOut: true, errorMessage: `Timed out after ${timeoutSec}s`, usage: { inputTokens: totalIn, outputTokens: totalOut }, provider: "openrouter", biller: "openrouter", model: resolvedModel, billingType: "api", costUsd: totalCost || null, summary: lastMessage || null };
-    }
-
-    // On the last turn, force a text response (no tools) so the agent always summarizes
-    const isLastTurn = turn === maxTurns - 1;
-    let result;
-    try {
-      result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : AGENT_TOOLS, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "API call failed";
-      await onLog("stderr", `[openrouter] ${msg}\n`);
-      return { exitCode: 1, signal: null, timedOut: false, errorMessage: msg, usage: { inputTokens: totalIn, outputTokens: totalOut }, provider: "openrouter", biller: "openrouter", model: resolvedModel, billingType: "api", costUsd: totalCost || null, summary: lastMessage || null };
-    }
-
-    if (result.usage) { totalIn += result.usage.prompt_tokens || 0; totalOut += result.usage.completion_tokens || 0; }
-    totalCost += result.cost;
-    if (result.model) resolvedModel = result.model;
-
-    messages.push(result.message);
-
-    if (!result.message.tool_calls?.length) {
-      lastMessage = result.message.content || "";
-      if (!lastMessage.trim() && turn > 0) {
-        lastMessage = `[Auto-summary] Agent completed ${turn + 1} turns using ${totalIn + totalOut} tokens ($${totalCost.toFixed(4)}). No explicit summary was provided by the model.`;
-      }
-      await onLog("stdout", `[openrouter] Response:\n${lastMessage.substring(0, 1000)}\n`);
+      await onLog("stdout", `[openrouter] Chain: timeout reached, stopping\n`);
+      chainTimedOut = true;
       break;
     }
 
-    // Warn agent when nearing the turn limit
-    if (turn === maxTurns - 3) {
-      messages.push({ role: "user", content: "SYSTEM: You have 2 tool calls remaining before this run ends. You MUST do these things NOW:\n1. Call update_issue to set the task status (done, in_progress, or blocked)\n2. Call add_comment with a summary of what you accomplished\nIf you have remaining work, set status to in_progress. If complete, set to done. Do NOT skip the status update." });
-      await onLog("stdout", `[openrouter] Warning agent: nearing turn limit\n`);
-    }
+    // ── Determine current issue for this chain iteration ─────
+    const chainIssue = chainQueue[chainIdx]; // undefined for non-chaining runs
+    const currentIssueId = chainIssue?.id || issueId;
+    let currentIssueProjectId: string | undefined = issueProjectId;
+    let currentIssueBlock = issueBlock;
 
-    for (const tc of result.message.tool_calls) {
-      await onLog("stdout", `[openrouter] Tool: ${tc.function.name}\n`);
-      const port = process.env.PORT || "3100";
-      const toolResult = await executeToolCall(tc.function.name, tc.function.arguments, cwd, onLog, {
-        port,
-        authHeader: jwtAuthHeader,
-        companyId: agent.companyId,
-        agentId: agent.id,
-        runId,
-        agentName: agent.name,
-        projectId: issueProjectId,
-        shellEnv: {
-          PAPERCLIP_AGENT_ID: agent.id,
-          PAPERCLIP_COMPANY_ID: agent.companyId,
-          PAPERCLIP_API_URL: `http://localhost:${port}`,
-          PAPERCLIP_RUN_ID: runId,
-          PAPERCLIP_TASK_ID: issueId || "",
-          PAPERCLIP_WAKE_REASON: wakeReason || "",
-          ...(jwtAuthHeader ? { PAPERCLIP_API_KEY: jwtAuthHeader.replace("Bearer ", "") } : {}),
-        },
-      });
-      messages.push({ role: "tool", content: sanitize(toolResult).substring(0, 50_000), tool_call_id: tc.id });
-    }
-  }
+    if (isChainedRun && chainIssue) {
+      await onLog("stdout", `[openrouter] Chain ${chainIdx + 1}/${chainQueue.length}: ${chainIssue.identifier} ${chainIssue.title}\n`);
 
-  // ── Auto-update issue status if agent didn't ─────────────
-  // After a successful run: if the issue is still todo → in_progress.
-  // If still in_progress (agent didn't explicitly mark done) → done.
-  // This ensures agents can't leave tasks hanging open after completing work.
-  if (issueId && jwtAuthHeader) {
-    try {
-      const port = process.env.PORT || "3100";
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
-      headers["X-Paperclip-Run-Id"] = runId;
-      const checkRes = await fetch(
-        `http://localhost:${port}/api/issues/${issueId}`,
-        { headers, signal: AbortSignal.timeout(5000) },
-      );
-      if (checkRes.ok) {
-        const issue = await checkRes.json() as { status?: string; identifier?: string };
-        if (issue.status === "todo" || issue.status === "in_progress") {
-          // Don't auto-close to done if there are open subtasks
-          let hasOpenSubtasks = false;
-          if (issue.status === "in_progress") {
-            try {
-              const childRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
-              if (childRes.ok) {
-                const children = await childRes.json() as Array<{ status?: string }>;
-                hasOpenSubtasks = children.some(c => c.status !== "done" && c.status !== "cancelled");
-              }
-            } catch { /* best effort */ }
+      // Fetch full issue context for this chain iteration
+      currentIssueBlock = "";
+      try {
+        const port = process.env.PORT || "3100";
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+        const res = await fetch(`http://localhost:${port}/api/issues/${chainIssue.id}`, { headers, signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const issue = await res.json() as { title?: string; description?: string; identifier?: string; status?: string; projectId?: string };
+          // Skip done/cancelled/blocked issues
+          if (issue.status === "cancelled" || issue.status === "done" || issue.status === "blocked") {
+            await onLog("stdout", `[openrouter] Skipping ${issue.identifier} — ${issue.status}\n`);
+            continue;
           }
-          await fetch(`http://localhost:${port}/api/issues/${issueId}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
-          const newStatus = issue.status === "todo" ? "in_progress" : (hasOpenSubtasks ? "in_progress" : "done");
-          if (newStatus !== issue.status) {
-            const body: Record<string, unknown> = { status: newStatus };
-            if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
-            const patchRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { method: "PATCH", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
-            if (patchRes.ok) {
-              await onLog("stdout", `[openrouter] Auto-${newStatus === "done" ? "closed" : "updated"} ${issue.identifier} → ${newStatus}\n`);
+          if (issue.projectId) currentIssueProjectId = issue.projectId;
+          currentIssueBlock = `\n## ASSIGNED TASK: ${issue.identifier || ""} ${issue.title || ""}\n${issue.description || ""}`;
+
+          // Check for subtasks (coordination/synthesis mode)
+          try {
+            const childRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${chainIssue.id}`, { headers, signal: AbortSignal.timeout(5000) });
+            if (childRes.ok) {
+              const children = await childRes.json() as Array<{ identifier?: string; title?: string; status?: string }>;
+              if (children.length > 0) {
+                const openChildren = children.filter(c => c.status !== "done" && c.status !== "cancelled");
+                const allDone = openChildren.length === 0;
+                const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
+                if (allDone) {
+                  currentIssueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Re-read the original task description above — if it asks for follow-up actions (e.g. sending an email, creating a document), do them now. To send an email, create an issue titled "[Email] ..." and assign it to Hermes.\n4. Mark this issue as done using update_issue`;
+                } else {
+                  const openList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
+                  currentIssueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are still in progress:\n${openList}\n\nDo NOT mark this issue as done — subtasks are still being worked on.\nYour only job: update_issue with a brief status summary of subtask progress, then stop.`;
+                }
+              }
+            }
+          } catch { /* best effort */ }
+
+          // Fetch related issues
+          const desc = issue.description || "";
+          const refPattern = /(?:Related|See|Context|Reference|Ref|Background):\s*((?:[A-Z]+-\d+(?:\s*,\s*)?)+)/gi;
+          const mentionPattern = /\[([A-Z]+-\d+)\]/g;
+          const relatedIds = new Set<string>();
+          let refMatch;
+          while ((refMatch = refPattern.exec(desc))) {
+            for (const id of refMatch[1].split(",").map(s => s.trim()).filter(Boolean)) {
+              if (/^[A-Z]+-\d+$/.test(id)) relatedIds.add(id);
+            }
+          }
+          while ((refMatch = mentionPattern.exec(desc))) {
+            relatedIds.add(refMatch[1]);
+          }
+          if (issue.identifier) relatedIds.delete(issue.identifier);
+          if (relatedIds.size > 0) {
+            for (const relId of relatedIds) {
+              try {
+                const relRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?identifier=${encodeURIComponent(relId)}`, { headers, signal: AbortSignal.timeout(3000) });
+                if (relRes.ok) {
+                  const relIssues = await relRes.json() as Array<{ identifier?: string; title?: string; description?: string; status?: string }>;
+                  const rel = relIssues.find(r => r.identifier === relId);
+                  if (rel) {
+                    currentIssueBlock += `\n\n### Related: ${rel.identifier} ${rel.title || ""} [${rel.status}]\n${(rel.description || "").substring(0, 500)}`;
+                  }
+                }
+              } catch { /* best effort */ }
             }
           }
         }
-      }
-    } catch {
-      // Best effort — don't fail the run for this
+      } catch { /* best effort — use minimal context */ }
     }
-  }
 
-  // ── Auto-advance assigned issues from heartbeat runs ──────
-  // todo → in_progress always. in_progress → done ONLY if agent has no open subtasks
-  // (prevents closing issues the agent never actually worked on).
-  if (!issueId && assignedIssueIds.length > 0 && jwtAuthHeader) {
-    const port = process.env.PORT || "3100";
-    const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: jwtAuthHeader, "X-Paperclip-Run-Id": runId };
-    for (const ai of assignedIssueIds) {
+    // ── Select model for this issue ───────────────────────────
+    let iterationModel = defaultModel;
+    if (isChainedRun && chainIssue) {
+      if (chainIssue.isSynthesis) {
+        iterationModel = complexModel;
+        await onLog("stdout", `[openrouter] Model: ${iterationModel} (complex, synthesis)\n`);
+      } else if (chainIssue.parentId) {
+        iterationModel = complexModel;
+        await onLog("stdout", `[openrouter] Model: ${iterationModel} (complex, subtask)\n`);
+      } else {
+        const scoreMatch = chainIssue.description.match(/complexity:\s*(\d+)\/10/i);
+        if (scoreMatch && parseInt(scoreMatch[1], 10) >= 7) {
+          iterationModel = complexModel;
+          await onLog("stdout", `[openrouter] Model: ${iterationModel} (complex, triage ${scoreMatch[1]})\n`);
+        } else {
+          await onLog("stdout", `[openrouter] Model: ${iterationModel} (standard)\n`);
+        }
+      }
+    } else if (!issueId && !assignedIssuesBlock) {
+      iterationModel = heartbeatModel;
+      await onLog("stdout", `[openrouter] Model: ${iterationModel} (heartbeat)\n`);
+    } else if (!issueId && hasSubtaskAssigned) {
+      iterationModel = complexModel;
+      await onLog("stdout", `[openrouter] Model: ${iterationModel} (complex, assigned subtask)\n`);
+    } else if (issueId && issueBlock) {
       try {
-        const checkRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { headers, signal: AbortSignal.timeout(5000) });
-        if (!checkRes.ok) continue;
-        const current = await checkRes.json() as { status?: string };
-        if (current.status === "todo") {
-          await fetch(`http://localhost:${port}/api/issues/${ai.id}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
-          const patchRes = await fetch(`http://localhost:${port}/api/issues/${ai.id}`, { method: "PATCH", headers, body: JSON.stringify({ status: "in_progress" }), signal: AbortSignal.timeout(5000) });
-          if (patchRes.ok) {
-            await onLog("stdout", `[openrouter] Auto-updated ${ai.identifier} → in_progress\n`);
+        const port = process.env.PORT || "3100";
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+        const issueRes = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
+        if (issueRes.ok) {
+          const issueData = await issueRes.json() as { parentId?: string; description?: string; comments?: Array<{ body?: string }> };
+          if (issueData.parentId) {
+            iterationModel = complexModel;
+            await onLog("stdout", `[openrouter] Model: ${iterationModel} (complex, subtask of decomposed parent)\n`);
+          } else {
+            const allText = (issueData.description ?? "") + " " + (issueData.comments ?? []).map(c => c.body ?? "").join(" ");
+            const scoreMatch = allText.match(/complexity:\s*(\d+)\/10/i);
+            if (scoreMatch && parseInt(scoreMatch[1], 10) >= 7) {
+              iterationModel = complexModel;
+              await onLog("stdout", `[openrouter] Model: ${iterationModel} (complex, triage score ${scoreMatch[1]})\n`);
+            } else {
+              await onLog("stdout", `[openrouter] Model: ${iterationModel} (standard${scoreMatch ? `, triage score ${scoreMatch[1]}` : ""})\n`);
+            }
           }
         }
-        // in_progress issues are NOT auto-closed from heartbeats —
-        // the agent must explicitly mark done (via synthesis mode for parents, or update_issue for regular issues)
-      } catch (err) {
-        await onLog("stderr", `[openrouter] Auto-advance error: ${err instanceof Error ? err.message : String(err)}\n`).catch(() => {});
+      } catch {
+        await onLog("stdout", `[openrouter] Model: ${iterationModel} (standard)\n`);
+      }
+    } else {
+      await onLog("stdout", `[openrouter] Model: ${iterationModel} (standard)\n`);
+    }
+    model = iterationModel;
+
+    if (onMeta && chainIdx === 0) {
+      await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });
+    }
+
+    // ── Build messages for this issue ────────────────────────
+    const userParts: string[] = [];
+    if (renderedBootstrap) userParts.push(renderedBootstrap);
+    userParts.push(renderedPrompt);
+    if (isChainedRun && chainIssue) {
+      userParts.push(currentIssueBlock);
+      userParts.push(`\nYou are working on issue ${chainIdx + 1} of ${chainQueue.length} in this run. Be efficient — complete the task, update status, and stop. Remaining turn budget: ${maxTurns - globalTurn}.`);
+    } else {
+      if (currentIssueBlock) userParts.push(currentIssueBlock);
+      if (assignedIssuesBlock) userParts.push(assignedIssuesBlock);
+      if (!currentIssueBlock && !assignedIssuesBlock && (wakeReason === "heartbeat_timer" || !wakeReason)) {
+        userParts.push("\nThis is a routine heartbeat. You have no assigned tasks. Report status briefly and stop.");
       }
     }
+
+    const messages: ChatMessage[] = [
+      { role: "system", content: systemParts.join("\n") },
+      { role: "user", content: userParts.join("\n\n") },
+    ];
+
+    await onLog("stdout", `[openrouter] Starting (model: ${model}, cwd: ${cwd})\n`);
+
+    // ── Conversation loop (shared turn budget) ──────────────
+    const turnsThisIteration = maxTurns - globalTurn;
+    let iterationLastMessage = "";
+    let iterationBroke = false;
+
+    for (let localTurn = 0; localTurn < turnsThisIteration; localTurn++) {
+      if (Date.now() - startedAt > timeoutSec * 1000) {
+        chainTimedOut = true;
+        iterationBroke = true;
+        break;
+      }
+
+      const isLastTurn = globalTurn + 1 >= maxTurns;
+      let result;
+      try {
+        result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : AGENT_TOOLS, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "API call failed";
+        await onLog("stderr", `[openrouter] ${msg}\n`);
+        chainErrorMessage = msg;
+        iterationBroke = true;
+        break;
+      }
+
+      globalTurn++;
+      if (result.usage) { totalIn += result.usage.prompt_tokens || 0; totalOut += result.usage.completion_tokens || 0; }
+      totalCost += result.cost;
+      if (result.model) resolvedModel = result.model;
+
+      messages.push(result.message);
+
+      if (!result.message.tool_calls?.length) {
+        iterationLastMessage = result.message.content || "";
+        if (!iterationLastMessage.trim() && localTurn > 0) {
+          iterationLastMessage = `[Auto-summary] Agent completed ${localTurn + 1} turns. No explicit summary provided.`;
+        }
+        await onLog("stdout", `[openrouter] Response:\n${iterationLastMessage.substring(0, 1000)}\n`);
+        break;
+      }
+
+      // Warn agent when nearing the global turn limit
+      if (globalTurn === maxTurns - 2) {
+        messages.push({ role: "user", content: "SYSTEM: You have 2 tool calls remaining before this run ends. You MUST do these things NOW:\n1. Call update_issue to set the task status (done, in_progress, or blocked)\n2. Call add_comment with a summary of what you accomplished\nIf you have remaining work, set status to in_progress. If complete, set to done. Do NOT skip the status update." });
+        await onLog("stdout", `[openrouter] Warning agent: nearing turn limit\n`);
+      }
+
+      for (const tc of result.message.tool_calls) {
+        await onLog("stdout", `[openrouter] Tool: ${tc.function.name}\n`);
+        const port = process.env.PORT || "3100";
+        const toolResult = await executeToolCall(tc.function.name, tc.function.arguments, cwd, onLog, {
+          port,
+          authHeader: jwtAuthHeader,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId,
+          agentName: agent.name,
+          projectId: currentIssueProjectId,
+          shellEnv: {
+            PAPERCLIP_AGENT_ID: agent.id,
+            PAPERCLIP_COMPANY_ID: agent.companyId,
+            PAPERCLIP_API_URL: `http://localhost:${port}`,
+            PAPERCLIP_RUN_ID: runId,
+            PAPERCLIP_TASK_ID: currentIssueId || "",
+            PAPERCLIP_WAKE_REASON: wakeReason || "",
+            ...(jwtAuthHeader ? { PAPERCLIP_API_KEY: jwtAuthHeader.replace("Bearer ", "") } : {}),
+          },
+        });
+        messages.push({ role: "tool", content: sanitize(toolResult).substring(0, 50_000), tool_call_id: tc.id });
+      }
+    }
+
+    lastMessage = iterationLastMessage || lastMessage;
+
+    // ── Per-issue auto-advance ──────────────────────────────
+    if (currentIssueId && jwtAuthHeader) {
+      try {
+        const port = process.env.PORT || "3100";
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+        headers["X-Paperclip-Run-Id"] = runId;
+        const checkRes = await fetch(`http://localhost:${port}/api/issues/${currentIssueId}`, { headers, signal: AbortSignal.timeout(5000) });
+        if (checkRes.ok) {
+          const issue = await checkRes.json() as { status?: string; identifier?: string };
+          if (issue.status === "todo" || issue.status === "in_progress") {
+            let hasOpenSubtasks = false;
+            if (issue.status === "in_progress") {
+              try {
+                const childRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${currentIssueId}`, { headers, signal: AbortSignal.timeout(5000) });
+                if (childRes.ok) {
+                  const children = await childRes.json() as Array<{ status?: string }>;
+                  hasOpenSubtasks = children.some(c => c.status !== "done" && c.status !== "cancelled");
+                }
+              } catch { /* best effort */ }
+            }
+            await fetch(`http://localhost:${port}/api/issues/${currentIssueId}/checkout`, { method: "POST", headers, body: JSON.stringify({ agentId: agent.id, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000) }).catch(() => {});
+            const newStatus = issue.status === "todo" ? "in_progress" : (hasOpenSubtasks ? "in_progress" : "done");
+            if (newStatus !== issue.status) {
+              const body: Record<string, unknown> = { status: newStatus };
+              if (newStatus === "done") body.comment = "[Auto-closed] Agent completed run without explicitly marking done.";
+              const patchRes = await fetch(`http://localhost:${port}/api/issues/${currentIssueId}`, { method: "PATCH", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+              if (patchRes.ok) {
+                await onLog("stdout", `[openrouter] Auto-${newStatus === "done" ? "closed" : "updated"} ${issue.identifier} → ${newStatus}\n`);
+              }
+            }
+          }
+        }
+      } catch { /* best effort */ }
+    }
+
+    // Track chain progress
+    if (chainIssue) {
+      chainSummaries.push(`${chainIssue.identifier}: ${(iterationLastMessage || "completed").substring(0, 200)}`);
+    }
+
+    // Stop chain on error or timeout
+    if (iterationBroke) break;
   }
+  // ── End of chain loop ─────────────────────────────────────
+
+  const summary = isChainedRun
+    ? `Chained ${chainSummaries.length}/${chainQueue.length} issues:\n${chainSummaries.join("\n")}`
+    : lastMessage || null;
 
   await onLog("stdout", `[openrouter] Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s | ${totalIn}+${totalOut} tokens | $${totalCost.toFixed(4)}\n`);
 
-  return { exitCode: 0, signal: null, timedOut: false, usage: { inputTokens: totalIn, outputTokens: totalOut }, provider: "openrouter", biller: "openrouter", model: resolvedModel, billingType: "api", costUsd: totalCost || null, summary: lastMessage || null };
+  return { exitCode: chainErrorMessage ? 1 : 0, signal: null, timedOut: chainTimedOut, errorMessage: chainErrorMessage, usage: { inputTokens: totalIn, outputTokens: totalOut }, provider: "openrouter", biller: "openrouter", model: resolvedModel, billingType: "api", costUsd: totalCost || null, summary };
 }
