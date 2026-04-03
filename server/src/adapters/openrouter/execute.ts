@@ -637,7 +637,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Create symlinks for desired skills
     for (const skill of runtimeSkills) {
       if (!skill.source) continue;
-      if (!desiredSkills.has(skill.runtimeName) && !desiredSkills.has(skill.key)) continue;
+      // Match by runtimeName, key, or slug (runtimeName may have --hash suffix)
+      const slug = skill.runtimeName.replace(/--[a-f0-9]+$/, "");
+      if (!desiredSkills.has(skill.runtimeName) && !desiredSkills.has(skill.key) && !desiredSkills.has(slug)) continue;
       try {
         await symlink(skill.source, resolve(skillsDir, skill.runtimeName));
         syncedSkillCount++;

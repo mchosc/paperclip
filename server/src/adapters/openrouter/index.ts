@@ -25,6 +25,7 @@ export const openrouterAdapter: ServerAdapterModule = {
     { id: "minimax/minimax-m2.7", label: "MiniMax M2.7" },
     { id: "minimax/minimax-m2.5", label: "MiniMax M2.5" },
     // Cheap (good for heartbeats)
+    { id: "mistralai/mistral-small-3.2-24b-instruct", label: "Mistral Small 3.2 24B" },
     { id: "meta-llama/llama-4-scout", label: "Llama 4 Scout (cheapest)" },
     { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
     { id: "deepseek/deepseek-chat", label: "DeepSeek Chat" },
