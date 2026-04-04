@@ -196,6 +196,36 @@ const AGENT_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "save_memory",
+      description: "Save an important learning, decision, or fact for future runs. Use when you discover something that should persist across runs — decisions made, facts found, approaches that worked/failed.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "The memory to save (a clear, self-contained statement)" },
+          category: { type: "string", description: "Memory type: decision, learning, fact, preference, or note", enum: ["decision", "learning", "fact", "preference", "note"] },
+          tags: { type: "string", description: "Comma-separated tags for categorization (optional)" },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_memories",
+      description: "Search for relevant context from previous runs. Use when the task depends on prior decisions, people, projects, or long-running context not in the current issue thread.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search for — describe the context you need" },
+        },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
 async function executeToolCall(
@@ -511,6 +541,92 @@ async function executeToolCall(
     }
   }
 
+  // ── Memory tools (MemOS integration) ────────────────────────
+  if (name === "save_memory" && apiContext) {
+    const content = args.content || "";
+    const category = args.category || "note";
+    const tags = (args.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean);
+    if (!content) return "Error: content is required";
+    await onLog("stdout", `[openrouter] Saving memory: ${content.substring(0, 80)}...\n`);
+    try {
+      const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
+      // Ensure agent is registered
+      await fetch(`${memosUrl}/product/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: apiContext.agentId, user_name: apiContext.agentName || apiContext.agentId }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => {});
+      // Store the memory
+      const metaLine = [
+        category ? `[category: ${category}]` : "",
+        apiContext.projectId ? `[project: ${apiContext.projectId}]` : "",
+        tags.length ? `[tags: ${tags.join(", ")}]` : "",
+        `[source: agent_tool]`,
+      ].filter(Boolean).join("\n");
+      const res = await fetch(`${memosUrl}/product/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: apiContext.agentId,
+          writable_cube_ids: [apiContext.companyId],
+          messages: [{ role: "assistant", content: `${content}\n${metaLine}` }],
+          async_mode: "sync",
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) return `Memory saved: "${content.substring(0, 100)}"`;
+      return `Failed to save memory: ${res.status}`;
+    } catch (err: unknown) {
+      return `Error saving memory: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  if (name === "search_memories" && apiContext) {
+    const query = args.query || "";
+    if (!query) return "Error: query is required";
+    await onLog("stdout", `[openrouter] Searching memories: ${query.substring(0, 80)}\n`);
+    try {
+      const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
+      const res = await fetch(`${memosUrl}/product/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          user_id: apiContext.agentId,
+          readable_cube_ids: [apiContext.companyId],
+          top_k: 5,
+          mode: "fast",
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return "No memories found (search failed).";
+      // Parse MemOS nested response: { data: { skill_mem: [{memories: [{memory, metadata}]}], ... } }
+      const body = await res.json() as { data?: Record<string, unknown> };
+      const results: string[] = [];
+      if (body.data && typeof body.data === "object") {
+        for (const [memType, val] of Object.entries(body.data)) {
+          if (typeof val === "string" && val.length > 10) {
+            results.push(`[${memType}] ${val}`);
+          } else if (Array.isArray(val)) {
+            for (const group of val) {
+              const g = group as { memories?: Array<{ memory?: string; metadata?: { sources?: Array<{ content?: string }> } }> };
+              for (const mem of g.memories ?? []) {
+                const source = mem.metadata?.sources?.[0]?.content;
+                const text = source || mem.memory || "";
+                if (text.length > 10) results.push(`[${memType}] ${text}`);
+              }
+            }
+          }
+        }
+      }
+      if (results.length === 0) return "No relevant memories found.";
+      return results.map((r, i) => `${i + 1}. ${r.substring(0, 500)}`).join("\n\n");
+    } catch (err: unknown) {
+      return `Error searching memories: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   return `Unknown tool: ${name}`;
 }
 
@@ -791,15 +907,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(projectWorkspaces.length > 0
       ? [`Project source code directories: ${projectWorkspaces.join(", ")}. Use these paths when the task involves project code.`]
       : []),
-    "You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment.",
+    "You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment, save_memory, search_memories.",
     "PREFER edit_file over write_file when modifying existing files — it's faster and safer than rewriting entire files.",
-    "",
-    "",
-    "GSD WORKFLOW: For coding/implementation tasks, create a .planning/ directory to track progress.",
-    "1. Create .planning/STATE.md with YAML frontmatter: milestone, current_phase, status, progress (total_phases, completed_phases, percent)",
-    "2. Create phase dirs under .planning/phases/: 1-context/, 2-implementation/, 3-verification/",
-    "3. In each phase: {N}-CONTEXT.md, {N}-RESEARCH.md, {N}-{M}-PLAN.md (with <objective>...</objective>), {N}-{M}-SUMMARY.md when done, {N}-VERIFICATION.md (frontmatter status: passed/gaps_found)",
-    "4. Update STATE.md as you progress. Skip GSD for heartbeats and simple status reports.",
     "",
     "RULES (in priority order):",
     "1. ISSUE STATUS IS MANDATORY: Before your run ends, you MUST call update_issue to set status (in_progress, done, or blocked). A run that does work but leaves the issue in 'todo' is a FAILED run. This is your #1 obligation.",
@@ -1068,6 +1177,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });
     }
 
+    // ── Inject memories from MemOS (per-issue) ─────────────────
+    let memoryBlock = "";
+    if (jwtAuthHeader && (currentIssueId || assignedIssuesBlock)) {
+      try {
+        const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
+        const memQuery = currentIssueBlock
+          ? currentIssueBlock.substring(0, 500)
+          : assignedIssuesBlock.substring(0, 500);
+        const memRes = await fetch(`${memosUrl}/product/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: memQuery,
+            user_id: agent.id,
+            readable_cube_ids: [agent.companyId],
+            top_k: 5,
+            mode: "fast",
+          }),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (memRes.ok) {
+          // MemOS returns { data: { skill_mem: [{memories: [{memory: "..."}]}], text_mem: [...], pref_note: "...", ... } }
+          const memBody = await memRes.json() as { data?: Record<string, unknown> };
+          const snippets: string[] = [];
+          if (memBody.data && typeof memBody.data === "object") {
+            for (const [, val] of Object.entries(memBody.data)) {
+              if (typeof val === "string" && val.length > 10) {
+                snippets.push(val); // pref_note
+              } else if (Array.isArray(val)) {
+                for (const group of val) {
+                  const g = group as { memories?: Array<{ memory?: string; metadata?: { sources?: Array<{ content?: string }> } }> };
+                  for (const mem of g.memories ?? []) {
+                    // Use source content if available (richer), otherwise the summary
+                    const source = mem.metadata?.sources?.[0]?.content;
+                    const text = source || mem.memory || "";
+                    if (text.length > 10) snippets.push(text);
+                  }
+                }
+              }
+            }
+          }
+          if (snippets.length > 0) {
+            memoryBlock = "\n## RELEVANT CONTEXT FROM PREVIOUS RUNS\nUse this context if relevant to the current task. Use search_memories for more.\n" +
+              snippets.slice(0, 5).map((s) => `- ${s.substring(0, 500)}`).join("\n");
+            await onLog("stdout", `[openrouter] Injected ${snippets.length} memories\n`);
+          }
+        }
+      } catch { /* best effort */ }
+    }
+
     // ── Build messages for this issue ────────────────────────
     const userParts: string[] = [];
     if (renderedBootstrap) userParts.push(renderedBootstrap);
@@ -1082,6 +1241,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         userParts.push("\nThis is a routine heartbeat. You have no assigned tasks. Report status briefly and stop.");
       }
     }
+    if (memoryBlock) userParts.push(memoryBlock);
 
     const messages: ChatMessage[] = [
       { role: "system", content: systemParts.join("\n") },
@@ -1196,6 +1356,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
           }
         }
+      } catch { /* best effort */ }
+    }
+
+    // ── Extract memories from run output ──────────────────────
+    // Only store memories when the agent worked on an actual task (not idle heartbeats)
+    if (currentIssueId && iterationLastMessage && iterationLastMessage.length > 100) {
+      try {
+        const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
+        // Register agent (idempotent)
+        await fetch(`${memosUrl}/product/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: agent.id, user_name: agent.name || agent.id }),
+          signal: AbortSignal.timeout(3000),
+        }).catch(() => {});
+        // Store the run output as memory
+        const metaLine = [
+          `[source: auto_extract]`,
+          currentIssueProjectId ? `[project: ${currentIssueProjectId}]` : "",
+          currentIssueId ? `[issue: ${currentIssueId}]` : "",
+          `[run: ${runId}]`,
+        ].filter(Boolean).join("\n");
+        await fetch(`${memosUrl}/product/add`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: agent.id,
+            writable_cube_ids: [agent.companyId],
+            messages: [{ role: "assistant", content: `${iterationLastMessage.substring(0, 3000)}\n${metaLine}` }],
+            async_mode: "async",
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+        await onLog("stdout", `[openrouter] Stored run memories\n`);
       } catch { /* best effort */ }
     }
 
