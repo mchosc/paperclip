@@ -68,6 +68,7 @@ describe("CommentThread", () => {
       status: "active",
       reportsTo: null,
       capabilities: null,
+      avatarUrl: null,
       adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
