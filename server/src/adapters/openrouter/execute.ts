@@ -223,7 +223,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
         properties: {
           title: { type: "string", description: "Issue title" },
           description: { type: "string", description: "Issue description with full details" },
-          assignee_agent_name: { type: "string", description: "Agent name to assign to (e.g., 'Hermes' for email)" },
+          assignee_agent_name: { type: "string", description: "Agent name to assign to" },
         },
         required: ["title", "description"],
       },
@@ -309,19 +309,19 @@ const AGENT_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "send_email",
-      description: "Send an HTML email with optional file attachments. Use for all outbound emails — reports, client communications, notifications. Always use HTML formatting for professional appearance.",
+      description: "Send a professionally formatted email. Write the body to 'email_body.md' first, then call this with to and subject — body is auto-read from email_body.md and converted to polished HTML.",
       parameters: {
         type: "object",
         properties: {
           to: { type: "string", description: "Recipient email address(es), comma-separated" },
           subject: { type: "string", description: "Email subject line" },
-          body: { type: "string", description: "Email body in HTML format. Use proper HTML tags: <h1>, <p>, <ul>, <li>, <table>, <strong>, etc." },
+          body: { type: "string", description: "(Optional) Email body inline. If empty, reads from email_body.md in working directory." },
           cc: { type: "string", description: "CC recipients, comma-separated (optional)" },
           bcc: { type: "string", description: "BCC recipients, comma-separated (optional)" },
           attachments: { type: "string", description: "Comma-separated workspace file paths to attach (optional)" },
           reply_to: { type: "string", description: "Reply-to address (optional, defaults to sender)" },
         },
-        required: ["to", "subject", "body"],
+        required: ["to", "subject"],
       },
     },
   },
@@ -751,8 +751,28 @@ async function executeToolCall(
   if (name === "send_email") {
     const to = args.to || "";
     const subject = args.subject || "";
-    const body = args.body || "";
-    if (!to || !subject || !body) return "Error: to, subject, and body are all required";
+    let body = args.body || args.content || args.message || "";
+
+    // Auto-read body from file if inline body is empty
+    if (!body) {
+      for (const candidate of ["email_body.md", "email_body.html", "email_body.txt"]) {
+        try {
+          body = await readFile(resolve(cwd, candidate), "utf-8");
+          if (body.trim()) {
+            await onLog("stdout", `[openrouter] Read email body from ${candidate} (${body.length} chars)\n`);
+            break;
+          }
+          body = "";
+        } catch { /* not found, try next */ }
+      }
+    }
+
+    if (!to || !subject) {
+      return `Error: 'to' and 'subject' are required.`;
+    }
+    if (!body) {
+      return `Error: email body is empty. Write the email content to a file called 'email_body.md' using write_file first, then call send_email again (body will be read automatically). Use markdown: # heading, **bold**, - bullets.`;
+    }
 
     const smtpHost = process.env.EMAIL_SMTP_HOST || "mail.privateemail.com";
     const smtpPort = process.env.EMAIL_SMTP_PORT || "465";
@@ -877,18 +897,23 @@ def md_to_html(text):
     result = re.sub(r'\\[([^\\]]+)\\]\\(([^)]+)\\)', r'<a href="\\2" style="color:#2563eb">\\1</a>', result)
     return result
 
-# Auto-detect: if it looks like markdown (has # headings, ** bold, - lists), convert it
+# Always convert through markdown processor — handles plain text, markdown, and mixed content
 if '<html' in body_raw.lower() or '<body' in body_raw.lower():
     body_html = body_raw
-elif re.search(r'^#{1,3}\\s|\\*\\*|^[-*]\\s|^\\|', body_raw, re.MULTILINE):
-    body_html = md_to_html(body_raw)
 else:
     body_html = md_to_html(body_raw)
 
-body_html = f"""<!DOCTYPE html>
+# Wrap in professional email template
+if '<html' not in body_html.lower():
+    body_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#333;max-width:680px;margin:0 auto;padding:20px">
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#333;max-width:680px;margin:0 auto;padding:20px;background:#fff">
+<div style="border:1px solid #e5e7eb;border-radius:8px;padding:28px 32px;background:#ffffff">
 {body_html}
+</div>
+<div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;text-align:center;font-size:11px;color:#999">
+Sent by Paperclip AI
+</div>
 </body></html>"""
 msg.attach(MIMEText(body_html, 'html', 'utf-8'))
 
@@ -921,8 +946,11 @@ except Exception as e:
     sys.exit(1)
 `;
 
+    // Write script to temp file to avoid shell escaping issues with python3 -c
+    const tmpScript = resolve(cwd, `.paperclip_email_${Date.now()}.py`);
     try {
-      const { stdout, stderr } = await execAsync(`python3 -c ${JSON.stringify(pyScript)}`, {
+      await writeFileAsync(tmpScript, pyScript, "utf-8");
+      const { stdout, stderr } = await execAsync(`python3 "${tmpScript}"`, {
         cwd,
         encoding: "utf-8",
         timeout: 60_000,
@@ -936,6 +964,8 @@ except Exception as e:
       const errMsg = (e.stderr || e.message || "Failed to send email").trim();
       await onLog("stderr", `[openrouter] Email error: ${errMsg}\n`);
       return `Error sending email: ${errMsg}`;
+    } finally {
+      unlink(tmpScript).catch(() => {});
     }
   }
 
@@ -1187,7 +1217,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
               if (allDone) {
                 // All subtasks complete — agent should synthesize findings and close
-                issueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Re-read the original task description above — if it asks for follow-up actions (e.g. sending an email, creating a document), do them now. To send an email, create an issue titled "[Email] ..." and assign it to Hermes.\n4. Mark this issue as done using update_issue`;
+                issueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Re-read the original task description above — if it asks for follow-up actions (e.g. sending an email, creating a document), do them now. To send an email, use the send_email tool directly.\n4. Mark this issue as done using update_issue`;
                 await onLog("stdout", `[openrouter] All ${children.length} subtask(s) complete — synthesis mode\n`);
               } else {
                 const openList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
@@ -1257,7 +1287,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "2. Stay focused on the assigned task. Do the actual work — do NOT create planning issues, coordination issues, progress check issues, or follow-up issues. Just do the work yourself.",
     "3. Do NOT create subtasks, follow-up tasks, or backlog items on your own initiative. Only create issues when explicitly asked to delegate work.",
     "4. NEVER create duplicate issues. NEVER create issues based on old reports or files in your workspace. If something was already done, leave it alone.",
-    "5. EMAILS: Use the send_email tool when the task requires sending an email (reports, client communications, notifications). Write the body in markdown — the tool converts it to styled HTML automatically. You can attach workspace files.",
+    "5. EMAILS: To send an email, write the body to 'email_body.md' (markdown), then call send_email with to + subject. Body is auto-read and converted to styled HTML. 'Send me an email' means send to the CEO (seth@animusystems.com). Keep emails concise and professional.",
     "6. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "7. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
     "8. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
@@ -1327,7 +1357,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             const regularLines = regularIssues.slice(0, 3).map(
               (i) => `- **${i.identifier}** ${i.title} [${i.status}]${i.description ? `: ${i.description.substring(0, 200)}` : ""}`
             );
-            assignedIssuesBlock = `\n## PRIORITY: SYNTHESISE COMPLETED SUBTASKS\nThe following parent issue(s) have ALL subtasks done. Pick the first one and:\n1. Read work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment using add_comment\n3. Re-read the original task description — if it asks for follow-up actions (e.g. sending an email), do them now. To send an email, create an issue titled "[Email] ..." and assign it to Hermes.\n4. Mark the issue as done using update_issue\n${synthLines.join("\n")}`;
+            assignedIssuesBlock = `\n## PRIORITY: SYNTHESISE COMPLETED SUBTASKS\nThe following parent issue(s) have ALL subtasks done. Pick the first one and:\n1. Read work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment using add_comment\n3. Re-read the original task description — if it asks for follow-up actions (e.g. sending an email), do them now. To send an email, use the send_email tool directly.\n4. Mark the issue as done using update_issue\n${synthLines.join("\n")}`;
             if (regularLines.length > 0) {
               assignedIssuesBlock += `\n\n## OTHER ASSIGNED ISSUES\n${regularLines.join("\n")}`;
             }
@@ -1419,7 +1449,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 const allDone = openChildren.length === 0;
                 const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
                 if (allDone) {
-                  currentIssueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Re-read the original task description above — if it asks for follow-up actions (e.g. sending an email, creating a document), do them now. To send an email, create an issue titled "[Email] ..." and assign it to Hermes.\n4. Mark this issue as done using update_issue`;
+                  currentIssueBlock += `\n\n## ALL SUBTASKS ARE COMPLETE\n${childList}\n\nAll subtasks are done. Your job:\n1. Read the work output from each subtask (check comments, workspace files)\n2. Write a final summary combining all findings as a comment on THIS issue using add_comment\n3. Re-read the original task description above — if it asks for follow-up actions (e.g. sending an email, creating a document), do them now. To send an email, use the send_email tool directly.\n4. Mark this issue as done using update_issue`;
                 } else {
                   const openList = openChildren.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
                   currentIssueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are still in progress:\n${openList}\n\nDo NOT mark this issue as done — subtasks are still being worked on.\nYour only job: update_issue with a brief status summary of subtask progress, then stop.`;

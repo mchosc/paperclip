@@ -1673,7 +1673,11 @@ export function companySkillService(db: Db) {
     if (!skill || skill.companyId !== companyId) return null;
 
     const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
-    const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
+    let fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
+    // Every valid skill has a SKILL.md — allow reading it even when inventory is empty/stale
+    if (!fileEntry && normalizedPath === "SKILL.md") {
+      fileEntry = { path: "SKILL.md", kind: "skill" };
+    }
     if (!fileEntry) {
       throw notFound("Skill file not found");
     }
@@ -1701,7 +1705,15 @@ export function companySkillService(db: Db) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+      try {
+        content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+      } catch {
+        if (normalizedPath === "SKILL.md" && skill.markdown) {
+          content = skill.markdown;
+        } else {
+          throw notFound("Skill file not found");
+        }
+      }
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
