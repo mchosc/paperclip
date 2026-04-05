@@ -868,17 +868,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = asNumber(config.timeoutSec, 600);
   const maxTurns = asNumber(config.maxTurns, 30);
   const maxChainIssues = asNumber(config.maxChainIssues, 5);
-  // Auto-build fallback chain from configured models (no manual config needed).
-  // If user explicitly sets fallbackModels, use those; otherwise derive from heartbeat/complex/default.
-  const explicitFallbacks: string[] = Array.isArray(config.fallbackModels)
-    ? (config.fallbackModels as string[]).filter((m) => typeof m === "string" && m.trim())
-    : typeof config.fallbackModels === "string" && config.fallbackModels
-      ? (config.fallbackModels as string).split(",").map((m) => m.trim()).filter(Boolean)
-      : [];
-  const SAFE_FALLBACK = "mistralai/mistral-small-3.2-24b-instruct";
-  const fallbackModels: string[] = explicitFallbacks.length > 0
-    ? explicitFallbacks
-    : [...new Set([heartbeatModel, complexModel, defaultModel, SAFE_FALLBACK])];
+  // Single fallback model — set via UI dropdown
+  const fallbackModel = asString(config.fallbackModel, "");
 
   // Model will be selected after we know the task context
   let model = defaultModel;
@@ -1488,29 +1479,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "API call failed";
-        // Fallback models: retry with alternatives on quota/rate-limit errors
-        if (isQuotaOrRateLimitError(msg) && fallbackModels.length > 0) {
-          let recovered = false;
-          for (const fb of fallbackModels) {
-            if (fb === model) continue;
-            try {
-              await onLog("stderr", `[openrouter] ${model} quota/rate-limit hit, falling back to ${fb}\n`);
-              result = await callOpenRouter(apiKey, fb, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
-              model = fb; // use this model for remaining turns
-              recovered = true;
-              break;
-            } catch (fbErr: unknown) {
-              const fbMsg = fbErr instanceof Error ? fbErr.message : "fallback failed";
-              await onLog("stderr", `[openrouter] Fallback ${fb} also failed: ${fbMsg}\n`);
-              if (!isQuotaOrRateLimitError(fbMsg)) { chainErrorMessage = fbMsg; iterationBroke = true; break; }
-            }
-          }
-          if (!recovered && !iterationBroke) {
-            await onLog("stderr", `[openrouter] All fallback models exhausted. ${msg}\n`);
-            chainErrorMessage = msg;
+        // Fallback model: retry with backup on quota/rate-limit errors
+        if (isQuotaOrRateLimitError(msg) && fallbackModel && fallbackModel !== model) {
+          try {
+            await onLog("stderr", `[openrouter] ${model} rate-limited, switching to ${fallbackModel}\n`);
+            result = await callOpenRouter(apiKey, fallbackModel, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
+            model = fallbackModel; // use fallback for remaining turns
+          } catch (fbErr: unknown) {
+            const fbMsg = fbErr instanceof Error ? fbErr.message : "fallback failed";
+            await onLog("stderr", `[openrouter] Fallback ${fallbackModel} also failed: ${fbMsg}\n`);
+            chainErrorMessage = fbMsg;
             iterationBroke = true;
+            break;
           }
-          if (iterationBroke) break;
         } else {
           await onLog("stderr", `[openrouter] ${msg}\n`);
           chainErrorMessage = msg;

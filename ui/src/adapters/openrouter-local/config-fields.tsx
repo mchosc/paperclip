@@ -104,6 +104,22 @@ export function OpenRouterLocalConfigFields({
         </Field>
       )}
 
+      {/* Fallback model — edit mode only */}
+      {!isCreate && models && models.length > 0 && (
+        <Field label="Fallback model" hint="Backup model used when the primary model hits rate limits or quota errors.">
+          <select
+            value={eff("adapterConfig", "fallbackModel", String(config.fallbackModel ?? ""))}
+            onChange={(e) => mark("adapterConfig", "fallbackModel", e.target.value || undefined)}
+            className={inputClass}
+          >
+            <option value="">None</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       {/* Desired skills — edit mode only */}
       {!isCreate && (
         <Field label="Skills" hint="Comma-separated skill names to load (e.g. xlsx,pdf,frontend-design). The 'paperclip' skill is always included.">
