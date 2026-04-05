@@ -10,6 +10,27 @@ const inputClass =
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
 
+function ModelSelect({
+  value,
+  onChange,
+  placeholder,
+  models,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  models: Array<{ id: string; label?: string }>;
+}) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={inputClass}>
+      <option value="">{placeholder}</option>
+      {models.map((m) => (
+        <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
+      ))}
+    </select>
+  );
+}
+
 export function OpenRouterLocalConfigFields({
   isCreate,
   values,
@@ -72,52 +93,63 @@ export function OpenRouterLocalConfigFields({
         </Field>
       )}
 
-      {/* Heartbeat model — edit mode only */}
+      {/* Model pairs: each model type with its fallback */}
       {!isCreate && models && models.length > 0 && (
-        <Field label="Heartbeat model" hint="Cheapest model for idle heartbeats with no tasks. Saves costs on status checks.">
-          <select
-            value={eff("adapterConfig", "heartbeatModel", String(config.heartbeatModel ?? ""))}
-            onChange={(e) => mark("adapterConfig", "heartbeatModel", e.target.value || undefined)}
-            className={inputClass}
-          >
-            <option value="">Same as default model</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
-            ))}
-          </select>
-        </Field>
-      )}
+        <>
+          {/* Heartbeat model + fallback */}
+          <Field label="Heartbeat model" hint="Cheap model for idle heartbeats. Fallback kicks in on rate limits.">
+            <div className="grid grid-cols-2 gap-2">
+              <ModelSelect
+                value={eff("adapterConfig", "heartbeatModel", String(config.heartbeatModel ?? ""))}
+                onChange={(v) => mark("adapterConfig", "heartbeatModel", v || undefined)}
+                placeholder="Same as default"
+                models={models}
+              />
+              <ModelSelect
+                value={eff("adapterConfig", "fallbackHeartbeatModel", String(config.fallbackHeartbeatModel ?? ""))}
+                onChange={(v) => mark("adapterConfig", "fallbackHeartbeatModel", v || undefined)}
+                placeholder="No fallback"
+                models={models}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-0.5">
+              <span className="text-[10px] text-muted-foreground/60">Primary</span>
+              <span className="text-[10px] text-muted-foreground/60">Fallback</span>
+            </div>
+          </Field>
 
-      {/* Complex task model — edit mode only */}
-      {!isCreate && models && models.length > 0 && (
-        <Field label="Complex task model" hint="Premium model for high-complexity tasks (triage score >= 7). Better reasoning for hard problems.">
-          <select
-            value={eff("adapterConfig", "complexModel", String(config.complexModel ?? ""))}
-            onChange={(e) => mark("adapterConfig", "complexModel", e.target.value || undefined)}
-            className={inputClass}
-          >
-            <option value="">Same as default model</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
-            ))}
-          </select>
-        </Field>
-      )}
+          {/* Complex task model + fallback */}
+          <Field label="Complex task model" hint="Premium model for hard tasks (triage >= 7). Fallback kicks in on rate limits.">
+            <div className="grid grid-cols-2 gap-2">
+              <ModelSelect
+                value={eff("adapterConfig", "complexModel", String(config.complexModel ?? ""))}
+                onChange={(v) => mark("adapterConfig", "complexModel", v || undefined)}
+                placeholder="Same as default"
+                models={models}
+              />
+              <ModelSelect
+                value={eff("adapterConfig", "fallbackComplexModel", String(config.fallbackComplexModel ?? ""))}
+                onChange={(v) => mark("adapterConfig", "fallbackComplexModel", v || undefined)}
+                placeholder="No fallback"
+                models={models}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-0.5">
+              <span className="text-[10px] text-muted-foreground/60">Primary</span>
+              <span className="text-[10px] text-muted-foreground/60">Fallback</span>
+            </div>
+          </Field>
 
-      {/* Fallback model — edit mode only */}
-      {!isCreate && models && models.length > 0 && (
-        <Field label="Fallback model" hint="Backup model used when the primary model hits rate limits or quota errors.">
-          <select
-            value={eff("adapterConfig", "fallbackModel", String(config.fallbackModel ?? ""))}
-            onChange={(e) => mark("adapterConfig", "fallbackModel", e.target.value || undefined)}
-            className={inputClass}
-          >
-            <option value="">None</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
-            ))}
-          </select>
-        </Field>
+          {/* Default model fallback */}
+          <Field label="Default model fallback" hint="Backup for the main model when it hits rate limits or quota errors.">
+            <ModelSelect
+              value={eff("adapterConfig", "fallbackModel", String(config.fallbackModel ?? ""))}
+              onChange={(v) => mark("adapterConfig", "fallbackModel", v || undefined)}
+              placeholder="No fallback"
+              models={models}
+            />
+          </Field>
+        </>
       )}
 
       {/* Desired skills — edit mode only */}

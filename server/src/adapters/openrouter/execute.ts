@@ -868,8 +868,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = asNumber(config.timeoutSec, 600);
   const maxTurns = asNumber(config.maxTurns, 30);
   const maxChainIssues = asNumber(config.maxChainIssues, 5);
-  // Single fallback model — set via UI dropdown
+  // Per-model-type fallbacks — set via UI dropdowns
   const fallbackModel = asString(config.fallbackModel, "");
+  const fallbackHeartbeatModel = asString(config.fallbackHeartbeatModel, fallbackModel);
+  const fallbackComplexModel = asString(config.fallbackComplexModel, fallbackModel);
 
   // Model will be selected after we know the task context
   let model = defaultModel;
@@ -1479,15 +1481,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "API call failed";
-        // Fallback model: retry with backup on quota/rate-limit errors
-        if (isQuotaOrRateLimitError(msg) && fallbackModel && fallbackModel !== model) {
+        // Fallback: pick the right backup based on which model type was active
+        const fb = model === heartbeatModel ? fallbackHeartbeatModel
+          : model === complexModel ? fallbackComplexModel
+          : fallbackModel;
+        if (isQuotaOrRateLimitError(msg) && fb && fb !== model) {
           try {
-            await onLog("stderr", `[openrouter] ${model} rate-limited, switching to ${fallbackModel}\n`);
-            result = await callOpenRouter(apiKey, fallbackModel, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
-            model = fallbackModel; // use fallback for remaining turns
+            await onLog("stderr", `[openrouter] ${model} rate-limited, switching to ${fb}\n`);
+            result = await callOpenRouter(apiKey, fb, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
+            model = fb; // use fallback for remaining turns
           } catch (fbErr: unknown) {
             const fbMsg = fbErr instanceof Error ? fbErr.message : "fallback failed";
-            await onLog("stderr", `[openrouter] Fallback ${fallbackModel} also failed: ${fbMsg}\n`);
+            await onLog("stderr", `[openrouter] Fallback ${fb} also failed: ${fbMsg}\n`);
             chainErrorMessage = fbMsg;
             iterationBroke = true;
             break;
