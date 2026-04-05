@@ -1013,8 +1013,7 @@ async function callOpenRouter(
 }
 
 function isQuotaOrRateLimitError(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return /429|rate.?limit|quota|resource.?exhausted|capacity|overloaded|too many requests|credits/i.test(lower);
+  return /429|rate.?limit|quota|resource.?exhausted|capacity|overloaded|too many requests|credits|provider returned error/i.test(msg);
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -1599,6 +1598,104 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         }
       } catch { /* best effort */ }
+    }
+
+    // ── Email agent mode: bypass LLM entirely ────────────────
+    // When emailAgentMode is enabled, the agent reads the issue and sends
+    // email directly without any LLM conversation.
+    if (asBoolean(config.emailAgentMode, false) && currentIssueId && currentIssueBlock) {
+      await onLog("stdout", `[openrouter] Email agent mode — sending directly\n`);
+      try {
+        const port = process.env.PORT || "3100";
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
+
+        // Read the issue to get full description
+        const issueRes = await fetch(`http://localhost:${port}/api/issues/${currentIssueId}`, { headers, signal: AbortSignal.timeout(5000) });
+        if (!issueRes.ok) throw new Error(`Failed to read issue: ${issueRes.status}`);
+        const issueData = await issueRes.json() as { identifier?: string; title?: string; description?: string; status?: string; comments?: Array<{ body?: string; actor?: { name?: string } }> };
+
+        let emailBody = issueData.description || "";
+        let emailTo = "seth@animusystems.com";
+        let emailSubject = issueData.title || "Report";
+
+        // Check if description references another issue (e.g., "report for ANI-822")
+        const refMatch = emailBody.match(/(?:report|summary|results)\s+(?:for|of|on)\s+(ANI-\d+)/i);
+        if (refMatch) {
+          const refId = refMatch[1];
+          await onLog("stdout", `[openrouter] Fetching referenced issue: ${refId}\n`);
+
+          const refRes = await fetch(`http://localhost:${port}/api/issues/${encodeURIComponent(refId)}`, { headers, signal: AbortSignal.timeout(5000) });
+          if (refRes.ok) {
+            const refIssue = await refRes.json() as { identifier?: string; title?: string; description?: string; status?: string; comments?: Array<{ body?: string; actor?: { name?: string } }> };
+            emailSubject = `Report: ${refIssue.title || refId}`;
+
+            // Build report from referenced issue
+            const parts: string[] = [];
+            parts.push(`# ${refIssue.title || refId}`);
+            parts.push(`**Status:** ${refIssue.status || "unknown"}`);
+            if (refIssue.description) parts.push("", refIssue.description);
+
+            // Fetch comments
+            const commRes = await fetch(`http://localhost:${port}/api/issues/${encodeURIComponent(refId)}/comments`, { headers, signal: AbortSignal.timeout(5000) });
+            if (commRes.ok) {
+              const comments = await commRes.json() as Array<{ body?: string; actor?: { name?: string } }>;
+              if (comments.length > 0) {
+                parts.push("", "---", "## Comments");
+                for (const c of comments.slice(-10)) {
+                  parts.push(`\n**${c.actor?.name || "Agent"}:**\n${(c.body || "").substring(0, 2000)}`);
+                }
+              }
+            }
+
+            // Check for subtasks
+            const subRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${refId}`, { headers, signal: AbortSignal.timeout(5000) }).catch(() => null);
+            if (subRes?.ok) {
+              const subs = await subRes.json() as Array<{ identifier?: string; title?: string; status?: string }>;
+              if (subs.length > 0) {
+                parts.push("", "## Subtasks");
+                for (const s of subs) {
+                  parts.push(`- **${s.identifier}** ${s.title} — ${s.status}`);
+                }
+              }
+            }
+
+            emailBody = parts.join("\n");
+          }
+        }
+
+        // Extract To from description if specified
+        const toMatch = (issueData.description || "").match(/\*?\*?To:\*?\*?\s*(.+)/i);
+        if (toMatch) emailTo = toMatch[1].trim().replace(/\*+/g, "");
+
+        // Send the email
+        const sendResult = await executeToolCall("send_email", JSON.stringify({
+          to: emailTo,
+          subject: emailSubject,
+          body: emailBody,
+        }), cwd, onLog, { port, authHeader: jwtAuthHeader, companyId: agent.companyId, agentId: agent.id, runId });
+
+        await onLog("stdout", `[openrouter] ${sendResult}\n`);
+
+        // Update issue to done
+        if (currentIssueId) {
+          await executeToolCall("update_issue", JSON.stringify({
+            issue_identifier: issueData.identifier || currentIssueId,
+            status: "done",
+            comment: `Email sent to ${emailTo}: "${emailSubject}"`,
+          }), cwd, onLog, { port, authHeader: jwtAuthHeader, companyId: agent.companyId, agentId: agent.id, runId, agentName: agent.name });
+        }
+
+        await onLog("stdout", `[openrouter] Email agent mode complete\n`);
+        totalCost = 0; // No LLM cost
+        lastMessage = `Email sent to ${emailTo}: "${emailSubject}"`;
+        break; // Exit chain loop — done
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await onLog("stderr", `[openrouter] Email agent mode failed: ${msg}\n`);
+        chainErrorMessage = msg;
+        break;
+      }
     }
 
     // ── Build messages for this issue ────────────────────────

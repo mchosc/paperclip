@@ -152,6 +152,21 @@ export function OpenRouterLocalConfigFields({
         </>
       )}
 
+      {/* Email agent mode — edit mode only */}
+      {!isCreate && (
+        <Field label="Email agent mode" hint="Bypasses LLM. Reads issue, auto-formats to HTML, sends via send_email. Zero tokens, zero browsing. For dedicated email agents.">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={eff("adapterConfig", "emailAgentMode", Boolean(config.emailAgentMode ?? false))}
+              onChange={(e) => mark("adapterConfig", "emailAgentMode", e.target.checked)}
+              className="rounded"
+            />
+            <span className="text-sm text-muted-foreground">Enabled</span>
+          </label>
+        </Field>
+      )}
+
       {/* Skip synthesis mode — edit mode only */}
       {!isCreate && (
         <Field label="Skip synthesis mode" hint="Agent uses its own instructions even on parent issues with completed subtasks. Enable for utility agents (e.g., email).">
