@@ -291,6 +291,26 @@ const AGENT_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "send_email",
+      description: "Send an HTML email with optional file attachments. Use for all outbound emails — reports, client communications, notifications. Always use HTML formatting for professional appearance.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Recipient email address(es), comma-separated" },
+          subject: { type: "string", description: "Email subject line" },
+          body: { type: "string", description: "Email body in HTML format. Use proper HTML tags: <h1>, <p>, <ul>, <li>, <table>, <strong>, etc." },
+          cc: { type: "string", description: "CC recipients, comma-separated (optional)" },
+          bcc: { type: "string", description: "BCC recipients, comma-separated (optional)" },
+          attachments: { type: "string", description: "Comma-separated workspace file paths to attach (optional)" },
+          reply_to: { type: "string", description: "Reply-to address (optional, defaults to sender)" },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  },
 ];
 
 async function executeToolCall(
@@ -692,6 +712,103 @@ async function executeToolCall(
     }
   }
 
+  if (name === "send_email") {
+    const to = args.to || "";
+    const subject = args.subject || "";
+    const body = args.body || "";
+    if (!to || !subject || !body) return "Error: to, subject, and body are all required";
+
+    const smtpHost = process.env.EMAIL_SMTP_HOST || "mail.privateemail.com";
+    const smtpPort = process.env.EMAIL_SMTP_PORT || "465";
+    const smtpUser = process.env.EMAIL_USERNAME || "";
+    const smtpPass = process.env.EMAIL_PASSWORD || "";
+    const fromAddr = process.env.EMAIL_FROM || smtpUser;
+
+    if (!smtpUser || !smtpPass) return "Error: Email not configured (EMAIL_USERNAME/EMAIL_PASSWORD missing)";
+
+    await onLog("stdout", `[openrouter] Sending email to ${to}: ${subject}\n`);
+
+    // Build attachment args for the Python script
+    const attachmentPaths: string[] = [];
+    if (args.attachments) {
+      for (const p of args.attachments.split(",").map((s: string) => s.trim()).filter(Boolean)) {
+        attachmentPaths.push(resolve(cwd, p));
+      }
+    }
+
+    // Use Python's smtplib for reliable HTML email with attachments
+    const pyScript = `
+import smtplib, sys, os, mimetypes, base64
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+msg = MIMEMultipart('mixed')
+msg['From'] = ${JSON.stringify(fromAddr)}
+msg['To'] = ${JSON.stringify(to)}
+msg['Subject'] = ${JSON.stringify(subject)}
+${args.cc ? `msg['Cc'] = ${JSON.stringify(args.cc)}` : ""}
+${args.reply_to ? `msg['Reply-To'] = ${JSON.stringify(args.reply_to)}` : ""}
+
+body_html = ${JSON.stringify(body)}
+# Wrap in basic HTML doc if not already a full document
+if '<html' not in body_html.lower():
+    body_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 680px; margin: 0 auto; padding: 20px; }}
+h1, h2, h3 {{ color: #1a1a1a; }} table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }} th {{ background: #f5f5f5; }}
+</style></head><body>{body_html}</body></html>"""
+msg.attach(MIMEText(body_html, 'html', 'utf-8'))
+
+attachments = ${JSON.stringify(attachmentPaths)}
+for filepath in attachments:
+    if not os.path.isfile(filepath):
+        print(f"Warning: attachment not found: {filepath}", file=sys.stderr)
+        continue
+    ctype, _ = mimetypes.guess_type(filepath)
+    maintype, subtype = (ctype or 'application/octet-stream').split('/')
+    with open(filepath, 'rb') as f:
+        part = MIMEBase(maintype, subtype)
+        part.set_payload(f.read())
+    encoders.encode_base64(part)
+    part.add_header('Content-Disposition', 'attachment', filename=os.path.basename(filepath))
+    msg.attach(part)
+
+all_recipients = [a.strip() for a in msg['To'].split(',')]
+if msg.get('Cc'): all_recipients += [a.strip() for a in msg['Cc'].split(',')]
+${args.bcc ? `all_recipients += [a.strip() for a in ${JSON.stringify(args.bcc)}.split(',')]` : ""}
+
+try:
+    server = smtplib.SMTP_SSL(${JSON.stringify(smtpHost)}, ${JSON.stringify(parseInt(smtpPort))}, timeout=30)
+    server.login(${JSON.stringify(smtpUser)}, ${JSON.stringify(smtpPass)})
+    server.sendmail(${JSON.stringify(fromAddr)}, all_recipients, msg.as_string())
+    server.quit()
+    print(f"Email sent successfully to {msg['To']}")
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+`;
+
+    try {
+      const { stdout, stderr } = await execAsync(`python3 -c ${JSON.stringify(pyScript)}`, {
+        cwd,
+        encoding: "utf-8",
+        timeout: 60_000,
+        env: process.env as Record<string, string>,
+      });
+      const output = (stdout || "").trim();
+      if (output) await onLog("stdout", `[openrouter] ${output}\n`);
+      return output || "Email sent successfully";
+    } catch (err: unknown) {
+      const e = err as { stderr?: string; message?: string };
+      const errMsg = (e.stderr || e.message || "Failed to send email").trim();
+      await onLog("stderr", `[openrouter] Email error: ${errMsg}\n`);
+      return `Error sending email: ${errMsg}`;
+    }
+  }
+
   return `Unknown tool: ${name}`;
 }
 
@@ -737,6 +854,11 @@ async function callOpenRouter(
   };
 }
 
+function isQuotaOrRateLimitError(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return /429|rate.?limit|quota|resource.?exhausted|capacity|overloaded|too many requests|credits/i.test(lower);
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, context, onLog, onMeta, onSpawn } = ctx;
   const startedAt = Date.now();
@@ -746,6 +868,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = asNumber(config.timeoutSec, 600);
   const maxTurns = asNumber(config.maxTurns, 30);
   const maxChainIssues = asNumber(config.maxChainIssues, 5);
+  const fallbackModels: string[] = Array.isArray(config.fallbackModels)
+    ? (config.fallbackModels as string[]).filter((m) => typeof m === "string" && m.trim())
+    : typeof config.fallbackModels === "string" && config.fallbackModels
+      ? (config.fallbackModels as string).split(",").map((m) => m.trim()).filter(Boolean)
+      : [];
 
   // Model will be selected after we know the task context
   let model = defaultModel;
@@ -994,7 +1121,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(projectWorkspaces.length > 0
       ? [`Project source code directories: ${projectWorkspaces.join(", ")}. Use these paths when the task involves project code.`]
       : []),
-    `You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment, save_memory, search_memories.${pluginTools.length > 0 ? ` Plugin tools: ${pluginTools.map(t => `${t.name.replace(/[.:]/g, "_")} (${t.description.substring(0, 80)})`).join(", ")}.` : ""}`,
+    `You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment, save_memory, search_memories, send_email (HTML emails with attachments).${pluginTools.length > 0 ? ` Plugin tools: ${pluginTools.map(t => `${t.name.replace(/[.:]/g, "_")} (${t.description.substring(0, 80)})`).join(", ")}.` : ""}`,
     "PREFER edit_file over write_file when modifying existing files — it's faster and safer than rewriting entire files.",
     "",
     "RULES (in priority order):",
@@ -1002,7 +1129,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "2. Stay focused on the assigned task. Do the actual work — do NOT create planning issues, coordination issues, progress check issues, or follow-up issues. Just do the work yourself.",
     "3. ONLY create new issues when explicitly delegating email to Hermes (title '[Email] subject'). Do NOT create subtasks, follow-up tasks, or backlog items on your own initiative.",
     "4. NEVER create duplicate issues. NEVER create issues based on old reports or files in your workspace. If something was already done, leave it alone.",
-    "5. EMAIL ATTACHMENTS DO NOT EXIST. You cannot attach files to emails. When delegating email to Hermes, include the FULL report content in the issue description. Never say 'see attached' — paste the content inline.",
+    "5. EMAILS: Use the send_email tool for all outbound emails. Always use HTML formatting (tables, headings, styled text). You can attach workspace files. Never delegate email via issue creation — send it directly.",
     "6. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "7. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
     "8. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
@@ -1355,12 +1482,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "API call failed";
-        await onLog("stderr", `[openrouter] ${msg}\n`);
-        chainErrorMessage = msg;
-        iterationBroke = true;
-        break;
+        // Fallback models: retry with alternatives on quota/rate-limit errors
+        if (isQuotaOrRateLimitError(msg) && fallbackModels.length > 0) {
+          let recovered = false;
+          for (const fb of fallbackModels) {
+            if (fb === model) continue;
+            try {
+              await onLog("stderr", `[openrouter] ${model} quota/rate-limit hit, falling back to ${fb}\n`);
+              result = await callOpenRouter(apiKey, fb, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
+              model = fb; // use this model for remaining turns
+              recovered = true;
+              break;
+            } catch (fbErr: unknown) {
+              const fbMsg = fbErr instanceof Error ? fbErr.message : "fallback failed";
+              await onLog("stderr", `[openrouter] Fallback ${fb} also failed: ${fbMsg}\n`);
+              if (!isQuotaOrRateLimitError(fbMsg)) { chainErrorMessage = fbMsg; iterationBroke = true; break; }
+            }
+          }
+          if (!recovered && !iterationBroke) {
+            await onLog("stderr", `[openrouter] All fallback models exhausted. ${msg}\n`);
+            chainErrorMessage = msg;
+            iterationBroke = true;
+          }
+          if (iterationBroke) break;
+        } else {
+          await onLog("stderr", `[openrouter] ${msg}\n`);
+          chainErrorMessage = msg;
+          iterationBroke = true;
+          break;
+        }
       }
 
+      if (!result) { iterationBroke = true; break; }
       globalTurn++;
       if (result.usage) { totalIn += result.usage.prompt_tokens || 0; totalOut += result.usage.completion_tokens || 0; }
       totalCost += result.cost;

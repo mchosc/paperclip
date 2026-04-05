@@ -972,11 +972,11 @@ export function IssueDetail() {
   useEffect(() => {
     if (issue) {
       openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
+        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} childIssues={childIssues} />
       );
     }
     return () => closePanel();
-  }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [issue, childIssues]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inboxQuickArchiveArmedRef = useRef(false);
   const canQuickArchiveFromInbox =
