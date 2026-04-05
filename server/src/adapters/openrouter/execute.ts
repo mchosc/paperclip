@@ -1030,6 +1030,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const fallbackModel = asString(config.fallbackModel, "");
   const fallbackHeartbeatModel = asString(config.fallbackHeartbeatModel, fallbackModel);
   const fallbackComplexModel = asString(config.fallbackComplexModel, fallbackModel);
+  const skipSynthesisMode = asBoolean(config.skipSynthesisMode, false);
 
   // Model will be selected after we know the task context
   let model = defaultModel;
@@ -1210,7 +1211,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           );
           if (childRes.ok) {
             const children = await childRes.json() as Array<{ identifier?: string; title?: string; status?: string; assigneeAgentId?: string }>;
-            if (children.length > 0) {
+            if (children.length > 0 && !skipSynthesisMode) {
               const openChildren = children.filter(c => c.status !== "done" && c.status !== "cancelled");
               const allDone = openChildren.length === 0;
               const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
@@ -1223,6 +1224,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 issueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are still in progress:\n${openList}\n\nDo NOT mark this issue as done — subtasks are still being worked on.\nYour only job: update_issue with a brief status summary of subtask progress, then stop.`;
                 await onLog("stdout", `[openrouter] Task has ${openChildren.length} open subtask(s) — coordination mode\n`);
               }
+            } else if (children.length > 0 && skipSynthesisMode) {
+              await onLog("stdout", `[openrouter] Skipping synthesis/coordination mode (skipSynthesisMode enabled)\n`);
             }
           }
         } catch { /* best effort */ }
