@@ -751,15 +751,109 @@ msg['Subject'] = ${JSON.stringify(subject)}
 ${args.cc ? `msg['Cc'] = ${JSON.stringify(args.cc)}` : ""}
 ${args.reply_to ? `msg['Reply-To'] = ${JSON.stringify(args.reply_to)}` : ""}
 
-body_html = ${JSON.stringify(body)}
-# Wrap in basic HTML doc if not already a full document
-if '<html' not in body_html.lower():
-    body_html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 680px; margin: 0 auto; padding: 20px; }}
-h1, h2, h3 {{ color: #1a1a1a; }} table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }} th {{ background: #f5f5f5; }}
-</style></head><body>{body_html}</body></html>"""
+body_raw = ${JSON.stringify(body)}
+
+import re
+
+def md_to_html(text):
+    """Convert markdown to HTML — handles headings, bold, italic, lists, tables, hr, links, paragraphs."""
+    lines = text.split('\\n')
+    html_lines = []
+    in_ul = False
+    in_table = False
+    in_p = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Close open lists/tables if line doesn't continue them
+        if in_ul and not stripped.startswith(('- ', '* ', '• ')):
+            html_lines.append('</ul>')
+            in_ul = False
+        if in_table and not stripped.startswith('|'):
+            html_lines.append('</table>')
+            in_table = False
+
+        # Horizontal rule
+        if stripped in ('---', '***', '___'):
+            if in_p: html_lines.append('</p>'); in_p = False
+            html_lines.append('<hr style="border:none;border-top:1px solid #ddd;margin:16px 0">')
+            continue
+
+        # Headings
+        m = re.match(r'^(#{1,3})\\s+(.+)', stripped)
+        if m:
+            if in_p: html_lines.append('</p>'); in_p = False
+            level = len(m.group(1))
+            sizes = {1: '24px', 2: '20px', 3: '16px'}
+            html_lines.append(f'<h{level} style="color:#1a1a1a;font-size:{sizes[level]};margin:20px 0 8px">{m.group(2)}</h{level}>')
+            continue
+
+        # Table rows
+        if stripped.startswith('|') and stripped.endswith('|'):
+            cells = [c.strip() for c in stripped.strip('|').split('|')]
+            if all(re.match(r'^[-:]+$', c) for c in cells):
+                continue  # separator row
+            if not in_table:
+                html_lines.append('<table style="border-collapse:collapse;width:100%;margin:12px 0">')
+                in_table = True
+                tag = 'th'
+            else:
+                tag = 'td'
+            style = 'border:1px solid #ddd;padding:8px;text-align:left'
+            if tag == 'th': style += ';background:#f5f5f5;font-weight:600'
+            row = ''.join(f'<{tag} style="{style}">{c}</{tag}>' for c in cells)
+            html_lines.append(f'<tr>{row}</tr>')
+            continue
+
+        # Bullet lists
+        m = re.match(r'^[-*•]\\s+(.+)', stripped)
+        if m:
+            if in_p: html_lines.append('</p>'); in_p = False
+            if not in_ul:
+                html_lines.append('<ul style="margin:8px 0;padding-left:24px">')
+                in_ul = True
+            html_lines.append(f'<li style="margin:4px 0">{m.group(1)}</li>')
+            continue
+
+        # Empty line = paragraph break
+        if not stripped:
+            if in_p: html_lines.append('</p>'); in_p = False
+            continue
+
+        # Regular text → paragraph
+        if not in_p:
+            html_lines.append('<p style="margin:8px 0;line-height:1.6">')
+            in_p = True
+        else:
+            html_lines.append('<br>')
+        html_lines.append(stripped)
+
+    if in_ul: html_lines.append('</ul>')
+    if in_table: html_lines.append('</table>')
+    if in_p: html_lines.append('</p>')
+
+    result = '\\n'.join(html_lines)
+    # Inline formatting
+    result = re.sub(r'\\*\\*(.+?)\\*\\*', r'<strong>\\1</strong>', result)
+    result = re.sub(r'\\*(.+?)\\*', r'<em>\\1</em>', result)
+    result = re.sub(r'\x60(.+?)\x60', r'<code style="background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:0.9em">\\1</code>', result)
+    result = re.sub(r'\\[([^\\]]+)\\]\\(([^)]+)\\)', r'<a href="\\2" style="color:#2563eb">\\1</a>', result)
+    return result
+
+# Auto-detect: if it looks like markdown (has # headings, ** bold, - lists), convert it
+if '<html' in body_raw.lower() or '<body' in body_raw.lower():
+    body_html = body_raw
+elif re.search(r'^#{1,3}\\s|\\*\\*|^[-*]\\s|^\\|', body_raw, re.MULTILINE):
+    body_html = md_to_html(body_raw)
+else:
+    body_html = md_to_html(body_raw)
+
+body_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#333;max-width:680px;margin:0 auto;padding:20px">
+{body_html}
+</body></html>"""
 msg.attach(MIMEText(body_html, 'html', 'utf-8'))
 
 attachments = ${JSON.stringify(attachmentPaths)}
