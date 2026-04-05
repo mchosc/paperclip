@@ -24,6 +24,71 @@ const execAsync = promisify(exec);
 const DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-v3.2";
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
+// ── Plugin tool integration ─────────────────────────────────
+interface PluginToolDescriptor {
+  name: string;
+  displayName: string;
+  description: string;
+  parametersSchema: Record<string, unknown>;
+  pluginId: string;
+}
+
+/** Discover plugin-contributed tools from the Paperclip plugin API. */
+async function discoverPluginTools(port: string, authHeader?: string): Promise<PluginToolDescriptor[]> {
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (authHeader) headers["Authorization"] = authHeader;
+    const res = await fetch(`http://localhost:${port}/api/plugins/tools`, {
+      headers,
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return [];
+    return (await res.json()) as PluginToolDescriptor[];
+  } catch {
+    return [];
+  }
+}
+
+/** Convert a plugin tool descriptor to an OpenAI-compatible tool definition. */
+function pluginToolToDefinition(tool: PluginToolDescriptor): ToolDefinition {
+  return {
+    type: "function",
+    function: {
+      name: tool.name.replace(/[.:]/g, "_"), // normalize for LLM (e.g. "acme.memory:recall" → "acme_memory_recall")
+      description: `[Plugin: ${tool.displayName}] ${tool.description}`,
+      parameters: tool.parametersSchema,
+    },
+  };
+}
+
+/** Execute a plugin tool via the Paperclip plugin API. */
+async function executePluginTool(
+  namespacedName: string,
+  params: Record<string, unknown>,
+  port: string,
+  authHeader: string | undefined,
+  runContext: { agentId: string; runId: string; companyId: string; projectId: string },
+): Promise<string> {
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (authHeader) headers["Authorization"] = authHeader;
+    const res = await fetch(`http://localhost:${port}/api/plugins/tools/execute`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ tool: namespacedName, parameters: params, runContext }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return `Plugin tool error (${res.status}): ${text.substring(0, 500)}`;
+    }
+    const result = await res.json() as { result?: { content?: string; error?: string } };
+    return result?.result?.content || result?.result?.error || "Plugin tool returned no content";
+  } catch (err: unknown) {
+    return `Plugin tool error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
@@ -807,6 +872,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   } catch {}
 
+  // ── Discover plugin tools ──��────────────────────────────────
+  const port = process.env.PORT || "3100";
+  let pluginTools: PluginToolDescriptor[] = [];
+  const pluginToolNameMap = new Map<string, string>(); // normalized name → namespaced name
+  if (jwtAuthHeader) {
+    pluginTools = await discoverPluginTools(port, jwtAuthHeader);
+    for (const pt of pluginTools) {
+      pluginToolNameMap.set(pt.name.replace(/[.:]/g, "_"), pt.name);
+    }
+    if (pluginTools.length > 0) {
+      await onLog("stdout", `[openrouter] Discovered ${pluginTools.length} plugin tool(s): ${pluginTools.map(t => t.displayName).join(", ")}\n`);
+    }
+  }
+  const allTools: ToolDefinition[] = [
+    ...AGENT_TOOLS,
+    ...pluginTools.map(pluginToolToDefinition),
+  ];
+
   // ── Fetch issue context ────────────────────────────────────
   let issueProjectId: string | undefined;
   if (issueId) {
@@ -907,7 +990,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(projectWorkspaces.length > 0
       ? [`Project source code directories: ${projectWorkspaces.join(", ")}. Use these paths when the task involves project code.`]
       : []),
-    "You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment, save_memory, search_memories.",
+    `You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment, save_memory, search_memories.${pluginTools.length > 0 ? ` Plugin tools: ${pluginTools.map(t => `${t.name.replace(/[.:]/g, "_")} (${t.description.substring(0, 80)})`).join(", ")}.` : ""}`,
     "PREFER edit_file over write_file when modifying existing files — it's faster and safer than rewriting entire files.",
     "",
     "RULES (in priority order):",
@@ -1265,7 +1348,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const isLastTurn = globalTurn + 1 >= maxTurns;
       let result;
       try {
-        result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : AGENT_TOOLS, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
+        result = await callOpenRouter(apiKey, model, messages, isLastTurn ? undefined : allTools, Math.max(30_000, (timeoutSec * 1000) - (Date.now() - startedAt)));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "API call failed";
         await onLog("stderr", `[openrouter] ${msg}\n`);
@@ -1298,25 +1381,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       for (const tc of result.message.tool_calls) {
         await onLog("stdout", `[openrouter] Tool: ${tc.function.name}\n`);
-        const port = process.env.PORT || "3100";
-        const toolResult = await executeToolCall(tc.function.name, tc.function.arguments, cwd, onLog, {
-          port,
-          authHeader: jwtAuthHeader,
-          companyId: agent.companyId,
-          agentId: agent.id,
-          runId,
-          agentName: agent.name,
-          projectId: currentIssueProjectId,
-          shellEnv: {
-            PAPERCLIP_AGENT_ID: agent.id,
-            PAPERCLIP_COMPANY_ID: agent.companyId,
-            PAPERCLIP_API_URL: `http://localhost:${port}`,
-            PAPERCLIP_RUN_ID: runId,
-            PAPERCLIP_TASK_ID: currentIssueId || "",
-            PAPERCLIP_WAKE_REASON: wakeReason || "",
-            ...(jwtAuthHeader ? { PAPERCLIP_API_KEY: jwtAuthHeader.replace("Bearer ", "") } : {}),
-          },
-        });
+        let toolResult: string;
+
+        // Check if this is a plugin tool (normalized name maps to a namespaced name)
+        const pluginNamespaced = pluginToolNameMap.get(tc.function.name);
+        if (pluginNamespaced) {
+          let args: Record<string, unknown>;
+          try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
+          toolResult = await executePluginTool(
+            pluginNamespaced,
+            args,
+            port,
+            jwtAuthHeader,
+            { agentId: agent.id, runId, companyId: agent.companyId, projectId: currentIssueProjectId || "" },
+          );
+        } else {
+          toolResult = await executeToolCall(tc.function.name, tc.function.arguments, cwd, onLog, {
+            port,
+            authHeader: jwtAuthHeader,
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId,
+            agentName: agent.name,
+            projectId: currentIssueProjectId,
+            shellEnv: {
+              PAPERCLIP_AGENT_ID: agent.id,
+              PAPERCLIP_COMPANY_ID: agent.companyId,
+              PAPERCLIP_API_URL: `http://localhost:${port}`,
+              PAPERCLIP_RUN_ID: runId,
+              PAPERCLIP_TASK_ID: currentIssueId || "",
+              PAPERCLIP_WAKE_REASON: wakeReason || "",
+              ...(jwtAuthHeader ? { PAPERCLIP_API_KEY: jwtAuthHeader.replace("Bearer ", "") } : {}),
+            },
+          });
+        }
         messages.push({ role: "tool", content: sanitize(toolResult).substring(0, 50_000), tool_call_id: tc.id });
       }
     }
