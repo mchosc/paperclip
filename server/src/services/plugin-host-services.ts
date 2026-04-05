@@ -809,7 +809,7 @@ export function buildHostServices(
         return (await issues.addComment(
           params.issueId,
           params.body,
-          {},
+          { agentId: params.authorAgentId },
         )) as IssueComment;
       },
     },
