@@ -28,6 +28,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { logActivity } from "./activity-log.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -2866,6 +2867,36 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Emit plugin event so plugins (audit, health-monitor, memory, etc.) are notified
+      const eventAction = outcome === "succeeded" ? "agent.run.finished" : outcome === "cancelled" ? "agent.run.cancelled" : "agent.run.failed";
+      void logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "agent",
+        actorId: agent.id,
+        action: eventAction,
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: {
+          agentId: agent.id,
+          agentName: agent.name,
+          runId: run.id,
+          status: outcome,
+          exitCode: adapterResult.exitCode,
+          costUsd: adapterResult.costUsd ?? 0,
+          summary: adapterResult.summary?.substring(0, 500) ?? null,
+          errorMessage: adapterResult.errorMessage ?? null,
+          model: adapterResult.model ?? null,
+          provider: adapterResult.provider ?? null,
+          inputTokens: rawUsage?.inputTokens ?? 0,
+          outputTokens: rawUsage?.outputTokens ?? 0,
+          issueId: (run.contextSnapshot as Record<string, unknown> | null)?.issueId ?? null,
+          projectId: (run.contextSnapshot as Record<string, unknown> | null)?.projectId ?? null,
+        },
+      }).catch((err) => logger.warn({ err, runId: run.id }, "failed to emit agent.run plugin event"));
+
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
