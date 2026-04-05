@@ -16,6 +16,7 @@ export const openrouterAdapter: ServerAdapterModule = {
     { id: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
     { id: "qwen/qwen3.5-plus", label: "Qwen 3.5 Plus" },
     { id: "qwen/qwen3.5-plus-02-15", label: "Qwen 3.5 Plus (02-15)" },
+    { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
     { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
     // Standard
     { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2" },
@@ -27,7 +28,7 @@ export const openrouterAdapter: ServerAdapterModule = {
     // Cheap (good for heartbeats)
     { id: "mistralai/mistral-small-3.2-24b-instruct", label: "Mistral Small 3.2 24B" },
     { id: "meta-llama/llama-4-scout", label: "Llama 4 Scout (cheapest)" },
-    { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+    { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite ($0.10)" },
     { id: "deepseek/deepseek-chat", label: "DeepSeek Chat" },
   ],
   supportsLocalAgentJwt: true,
