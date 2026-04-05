@@ -104,19 +104,6 @@ export function OpenRouterLocalConfigFields({
         </Field>
       )}
 
-      {/* Fallback models — edit mode only */}
-      {!isCreate && (
-        <Field label="Fallback models" hint="Comma-separated model IDs to try when the primary model hits rate limits or quota errors. Tried in order.">
-          <DraftInput
-            value={eff("adapterConfig", "fallbackModels", Array.isArray(config.fallbackModels) ? (config.fallbackModels as string[]).join(", ") : String(config.fallbackModels ?? ""))}
-            onCommit={(v) => mark("adapterConfig", "fallbackModels", v ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : undefined)}
-            immediate
-            className={inputClass}
-            placeholder="e.g. mistralai/mistral-small-3.2-24b-instruct, deepseek/deepseek-v3.2"
-          />
-        </Field>
-      )}
-
       {/* Desired skills — edit mode only */}
       {!isCreate && (
         <Field label="Skills" hint="Comma-separated skill names to load (e.g. xlsx,pdf,frontend-design). The 'paperclip' skill is always included.">

@@ -868,11 +868,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = asNumber(config.timeoutSec, 600);
   const maxTurns = asNumber(config.maxTurns, 30);
   const maxChainIssues = asNumber(config.maxChainIssues, 5);
-  const fallbackModels: string[] = Array.isArray(config.fallbackModels)
+  // Auto-build fallback chain from configured models (no manual config needed).
+  // If user explicitly sets fallbackModels, use those; otherwise derive from heartbeat/complex/default.
+  const explicitFallbacks: string[] = Array.isArray(config.fallbackModels)
     ? (config.fallbackModels as string[]).filter((m) => typeof m === "string" && m.trim())
     : typeof config.fallbackModels === "string" && config.fallbackModels
       ? (config.fallbackModels as string).split(",").map((m) => m.trim()).filter(Boolean)
       : [];
+  const SAFE_FALLBACK = "mistralai/mistral-small-3.2-24b-instruct";
+  const fallbackModels: string[] = explicitFallbacks.length > 0
+    ? explicitFallbacks
+    : [...new Set([heartbeatModel, complexModel, defaultModel, SAFE_FALLBACK])];
 
   // Model will be selected after we know the task context
   let model = defaultModel;
