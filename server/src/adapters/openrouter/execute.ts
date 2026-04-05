@@ -721,14 +721,18 @@ async function callOpenRouter(
 
   const data = await res.json() as {
     choices: Array<{ message: ChatMessage }>;
-    usage?: { prompt_tokens: number; completion_tokens: number };
+    usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
     model?: string;
   };
+
+  // Prefer cost from response body (usage.cost), fall back to header for older API versions
+  const bodyCost = typeof data.usage?.cost === "number" ? data.usage.cost : 0;
+  const headerCost = parseFloat(res.headers.get("x-openrouter-cost") || "0") || 0;
 
   return {
     message: data.choices?.[0]?.message || { role: "assistant" as const, content: "" },
     usage: data.usage,
-    cost: parseFloat(res.headers.get("x-openrouter-cost") || "0") || 0,
+    cost: bodyCost || headerCost,
     model: data.model,
   };
 }
