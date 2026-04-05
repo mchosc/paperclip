@@ -470,11 +470,11 @@ async function executeToolCall(
     const description = args.description || "";
     const assigneeName = args.assignee_agent_name || "";
 
-    // Only managers (CEO/CTO/CFO/CMO) can create issues for other agents
+    // Only managers (CEO/CTO/CFO/CMO/CLO) can create issues for other agents
     const agentNameLower = (apiContext.agentName || "").toLowerCase();
-    const isManager = /^(ceo|cto|cfo|cmo)\b/.test(agentNameLower);
+    const isManager = /^(ceo|cto|cfo|cmo|clo)\b/.test(agentNameLower);
     if (!isManager) {
-      return `BLOCKED: Only manager agents (CEO/CTO/CFO/CMO) can create issues. Do the work yourself.`;
+      return `BLOCKED: Only manager agents (CEO/CTO/CFO/CMO/CLO) can create issues. Do the work yourself.`;
     }
 
     await onLog("stdout", `[openrouter] Creating issue: ${title}${assigneeName ? ` (→ ${assigneeName})` : ""}\n`);
