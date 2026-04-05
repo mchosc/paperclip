@@ -264,6 +264,20 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "read_issue",
+      description: "Read a Paperclip issue's full details including title, description, status, comments, and assignee. Use to pull completed work for reports or email summaries.",
+      parameters: {
+        type: "object",
+        properties: {
+          issue_identifier: { type: "string", description: "Issue identifier (e.g., 'ANI-839')" },
+        },
+        required: ["issue_identifier"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "save_memory",
       description: "Save an important learning, decision, or fact for future runs. Use when you discover something that should persist across runs — decisions made, facts found, approaches that worked/failed.",
       parameters: {
@@ -623,6 +637,56 @@ async function executeToolCall(
       return `Failed to add comment to ${identifier}: ${res.status}`;
     } catch (err: unknown) {
       return `Error adding comment: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  if (name === "read_issue" && apiContext) {
+    const identifier = args.issue_identifier || "";
+    if (!identifier) return "Error: issue_identifier is required";
+    await onLog("stdout", `[openrouter] Reading issue: ${identifier}\n`);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiContext.authHeader) headers["Authorization"] = apiContext.authHeader;
+
+      // Get issue details
+      const issueRes = await fetch(
+        `http://localhost:${apiContext.port}/api/issues/${encodeURIComponent(identifier)}`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      if (!issueRes.ok) return `Issue ${identifier} not found (${issueRes.status})`;
+      const issue = await issueRes.json() as Record<string, unknown>;
+
+      // Get comments
+      const commentsRes = await fetch(
+        `http://localhost:${apiContext.port}/api/issues/${encodeURIComponent(identifier)}/comments`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      const comments = commentsRes.ok
+        ? await commentsRes.json() as Array<{ body?: string; createdAt?: string; actor?: { name?: string } }>
+        : [];
+
+      // Format output
+      const parts: string[] = [
+        `**${issue.identifier}: ${issue.title}**`,
+        `Status: ${issue.status} | Priority: ${issue.priority ?? "none"}`,
+      ];
+      if (issue.assignee && typeof issue.assignee === "object") {
+        parts.push(`Assignee: ${(issue.assignee as Record<string, unknown>).name ?? "unknown"}`);
+      }
+      if (issue.description) {
+        parts.push("", "--- DESCRIPTION ---", String(issue.description).substring(0, 5000));
+      }
+      if (comments.length > 0) {
+        parts.push("", "--- COMMENTS ---");
+        for (const c of comments.slice(-10)) {
+          const author = c.actor?.name ?? "system";
+          parts.push(`\n[${author}]: ${(c.body ?? "").substring(0, 2000)}`);
+        }
+      }
+
+      return parts.join("\n").substring(0, 20000);
+    } catch (err: unknown) {
+      return `Error reading issue: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
