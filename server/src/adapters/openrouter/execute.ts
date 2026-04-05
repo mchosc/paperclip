@@ -217,7 +217,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "create_issue",
-      description: "Create a Paperclip issue and optionally assign it to another agent. Use this to delegate work (e.g., email to Hermes).",
+      description: "Create a Paperclip issue and optionally assign it to another agent. Use this to delegate work to other agents.",
       parameters: {
         type: "object",
         properties: {
@@ -470,39 +470,11 @@ async function executeToolCall(
     const description = args.description || "";
     const assigneeName = args.assignee_agent_name || "";
 
-    // Allow email delegation for everyone, subtask creation only for managers
-    const isEmailDelegation = title.startsWith("[Email]");
+    // Only managers (CEO/CTO/CFO/CMO) can create issues for other agents
     const agentNameLower = (apiContext.agentName || "").toLowerCase();
     const isManager = /^(ceo|cto|cfo|cmo)\b/.test(agentNameLower);
-    if (!isEmailDelegation && !isManager) {
-      return `BLOCKED: IC agents cannot create issues. Only email delegation is allowed (title must start with "[Email]"). Do the work yourself.`;
-    }
-    // Hermes is email-only — auto-reassign non-email tasks using keyword routing
-    if (assigneeName.toLowerCase().includes("hermes") && !isEmailDelegation) {
-      const ROUTING: Array<[RegExp, string]> = [
-        [/security|audit|vulnerab|CVE/i, "Sentinel"],
-        [/architect|design|system|refactor/i, "Winston"],
-        [/code|implement|build|feature|bug|fix|engineer|index|schema/i, "Amelia"],
-        [/test|QA|regression|coverage/i, "Murat"],
-        [/UX|UI|wireframe|usability/i, "Sally"],
-        [/tax|compliance|filing|IGIC/i, "Audra"],
-        [/pricing|cost|margin|budget|financial/i, "CFO - Oro"],
-        [/SEO|keyword/i, "Atlas"],
-        [/content|editorial/i, "Iris"],
-        [/competitor|market.*research/i, "Rex"],
-        [/legal|terms|policy|contract/i, "Chaz"],
-        [/document|write|spec/i, "Paige"],
-        [/research|investigate|analyze/i, "Mary"],
-        [/product|roadmap|prioriti/i, "John"],
-      ];
-      let corrected = "";
-      for (const [pattern, name] of ROUTING) {
-        if (pattern.test(title)) { corrected = name; break; }
-      }
-      if (corrected) {
-        args.assignee_agent_name = corrected;
-        await onLog("stdout", `[openrouter] Hermes redirect: "${title}" → ${corrected}\n`);
-      }
+    if (!isManager) {
+      return `BLOCKED: Only manager agents (CEO/CTO/CFO/CMO) can create issues. Do the work yourself.`;
     }
 
     await onLog("stdout", `[openrouter] Creating issue: ${title}${assigneeName ? ` (→ ${assigneeName})` : ""}\n`);
@@ -1029,7 +1001,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const fallbackModel = asString(config.fallbackModel, "");
   const fallbackHeartbeatModel = asString(config.fallbackHeartbeatModel, fallbackModel);
   const fallbackComplexModel = asString(config.fallbackComplexModel, fallbackModel);
-  const skipSynthesisMode = asBoolean(config.skipSynthesisMode, false);
 
   // Model will be selected after we know the task context
   let model = defaultModel;
@@ -1210,7 +1181,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           );
           if (childRes.ok) {
             const children = await childRes.json() as Array<{ identifier?: string; title?: string; status?: string; assigneeAgentId?: string }>;
-            if (children.length > 0 && !skipSynthesisMode) {
+            if (children.length > 0) {
               const openChildren = children.filter(c => c.status !== "done" && c.status !== "cancelled");
               const allDone = openChildren.length === 0;
               const childList = children.map(c => `- ${c.identifier} ${c.title} [${c.status}]`).join("\n");
@@ -1223,8 +1194,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 issueBlock += `\n\n## THIS TASK HAS BEEN DECOMPOSED INTO SUBTASKS\nDo NOT do the work yourself. The following subtasks are still in progress:\n${openList}\n\nDo NOT mark this issue as done — subtasks are still being worked on.\nYour only job: update_issue with a brief status summary of subtask progress, then stop.`;
                 await onLog("stdout", `[openrouter] Task has ${openChildren.length} open subtask(s) — coordination mode\n`);
               }
-            } else if (children.length > 0 && skipSynthesisMode) {
-              await onLog("stdout", `[openrouter] Skipping synthesis/coordination mode (skipSynthesisMode enabled)\n`);
             }
           }
         } catch { /* best effort */ }
@@ -1286,9 +1255,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "RULES (in priority order):",
     "1. ISSUE STATUS IS MANDATORY: Before your run ends, you MUST call update_issue to set status (in_progress, done, or blocked). A run that does work but leaves the issue in 'todo' is a FAILED run. This is your #1 obligation.",
     "2. Stay focused on the assigned task. Do the actual work — do NOT create planning issues, coordination issues, progress check issues, or follow-up issues. Just do the work yourself.",
-    "3. ONLY create new issues when explicitly delegating email to Hermes (title '[Email] subject'). Do NOT create subtasks, follow-up tasks, or backlog items on your own initiative.",
+    "3. Do NOT create subtasks, follow-up tasks, or backlog items on your own initiative. Only create issues when explicitly asked to delegate work.",
     "4. NEVER create duplicate issues. NEVER create issues based on old reports or files in your workspace. If something was already done, leave it alone.",
-    "5. EMAILS: Use the send_email tool for all outbound emails. Always use HTML formatting (tables, headings, styled text). You can attach workspace files. Never delegate email via issue creation — send it directly.",
+    "5. EMAILS: Use the send_email tool when the task requires sending an email (reports, client communications, notifications). Write the body in markdown — the tool converts it to styled HTML automatically. You can attach workspace files.",
     "6. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "7. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
     "8. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
@@ -1598,104 +1567,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         }
       } catch { /* best effort */ }
-    }
-
-    // ── Email agent mode: bypass LLM entirely ────────────────
-    // When emailAgentMode is enabled, the agent reads the issue and sends
-    // email directly without any LLM conversation.
-    if (asBoolean(config.emailAgentMode, false) && currentIssueId && currentIssueBlock) {
-      await onLog("stdout", `[openrouter] Email agent mode — sending directly\n`);
-      try {
-        const port = process.env.PORT || "3100";
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
-
-        // Read the issue to get full description
-        const issueRes = await fetch(`http://localhost:${port}/api/issues/${currentIssueId}`, { headers, signal: AbortSignal.timeout(5000) });
-        if (!issueRes.ok) throw new Error(`Failed to read issue: ${issueRes.status}`);
-        const issueData = await issueRes.json() as { identifier?: string; title?: string; description?: string; status?: string; comments?: Array<{ body?: string; actor?: { name?: string } }> };
-
-        let emailBody = issueData.description || "";
-        let emailTo = "seth@animusystems.com";
-        let emailSubject = issueData.title || "Report";
-
-        // Check if description references another issue (e.g., "report for ANI-822")
-        const refMatch = emailBody.match(/(?:report|summary|results)\s+(?:for|of|on)\s+(ANI-\d+)/i);
-        if (refMatch) {
-          const refId = refMatch[1];
-          await onLog("stdout", `[openrouter] Fetching referenced issue: ${refId}\n`);
-
-          const refRes = await fetch(`http://localhost:${port}/api/issues/${encodeURIComponent(refId)}`, { headers, signal: AbortSignal.timeout(5000) });
-          if (refRes.ok) {
-            const refIssue = await refRes.json() as { identifier?: string; title?: string; description?: string; status?: string; comments?: Array<{ body?: string; actor?: { name?: string } }> };
-            emailSubject = `Report: ${refIssue.title || refId}`;
-
-            // Build report from referenced issue
-            const parts: string[] = [];
-            parts.push(`# ${refIssue.title || refId}`);
-            parts.push(`**Status:** ${refIssue.status || "unknown"}`);
-            if (refIssue.description) parts.push("", refIssue.description);
-
-            // Fetch comments
-            const commRes = await fetch(`http://localhost:${port}/api/issues/${encodeURIComponent(refId)}/comments`, { headers, signal: AbortSignal.timeout(5000) });
-            if (commRes.ok) {
-              const comments = await commRes.json() as Array<{ body?: string; actor?: { name?: string } }>;
-              if (comments.length > 0) {
-                parts.push("", "---", "## Comments");
-                for (const c of comments.slice(-10)) {
-                  parts.push(`\n**${c.actor?.name || "Agent"}:**\n${(c.body || "").substring(0, 2000)}`);
-                }
-              }
-            }
-
-            // Check for subtasks
-            const subRes = await fetch(`http://localhost:${port}/api/companies/${agent.companyId}/issues?parentId=${refId}`, { headers, signal: AbortSignal.timeout(5000) }).catch(() => null);
-            if (subRes?.ok) {
-              const subs = await subRes.json() as Array<{ identifier?: string; title?: string; status?: string }>;
-              if (subs.length > 0) {
-                parts.push("", "## Subtasks");
-                for (const s of subs) {
-                  parts.push(`- **${s.identifier}** ${s.title} — ${s.status}`);
-                }
-              }
-            }
-
-            emailBody = parts.join("\n");
-          }
-        }
-
-        // Extract To from description if specified
-        const toMatch = (issueData.description || "").match(/\*?\*?To:\*?\*?\s*(.+)/i);
-        if (toMatch) emailTo = toMatch[1].trim().replace(/\*+/g, "");
-
-        // Send the email
-        const sendResult = await executeToolCall("send_email", JSON.stringify({
-          to: emailTo,
-          subject: emailSubject,
-          body: emailBody,
-        }), cwd, onLog, { port, authHeader: jwtAuthHeader, companyId: agent.companyId, agentId: agent.id, runId });
-
-        await onLog("stdout", `[openrouter] ${sendResult}\n`);
-
-        // Update issue to done
-        if (currentIssueId) {
-          await executeToolCall("update_issue", JSON.stringify({
-            issue_identifier: issueData.identifier || currentIssueId,
-            status: "done",
-            comment: `Email sent to ${emailTo}: "${emailSubject}"`,
-          }), cwd, onLog, { port, authHeader: jwtAuthHeader, companyId: agent.companyId, agentId: agent.id, runId, agentName: agent.name });
-        }
-
-        await onLog("stdout", `[openrouter] Email agent mode complete\n`);
-        totalCost = 0; // No LLM cost
-        lastMessage = `Email sent to ${emailTo}: "${emailSubject}"`;
-        break; // Exit chain loop — done
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await onLog("stderr", `[openrouter] Email agent mode failed: ${msg}\n`);
-        chainErrorMessage = msg;
-        break;
-      }
     }
 
     // ── Build messages for this issue ────────────────────────
