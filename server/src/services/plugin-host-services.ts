@@ -12,6 +12,7 @@ import type {
   IssueComment,
 } from "@paperclipai/plugin-sdk";
 import { companyService } from "./companies.js";
+import { companySkillService } from "./company-skills.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
@@ -449,6 +450,7 @@ export function buildHostServices(
   const stateStore = pluginStateStore(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
+  const companySkills = companySkillService(db);
   const agents = agentService(db);
   const heartbeat = heartbeatService(db);
   const projects = projectService(db);
@@ -1143,5 +1145,14 @@ export function buildHostServices(
         console.error("[plugin-host-services] dispose() log flush failed:", err);
       });
     },
-  };
+
+    // Extended host services (not in SDK types, accessed dynamically by plugins)
+    skills: {
+      async list(params: { companyId: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return (await companySkills.list(companyId)) as unknown as Record<string, unknown>[];
+      },
+    },
+  } as HostServices & { dispose(): void };
 }
