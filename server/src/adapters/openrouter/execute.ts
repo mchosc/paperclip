@@ -1291,6 +1291,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "6. ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "7. Use minimal tool calls. When done, call update_issue(status='done'), then add_comment with a summary, then STOP.",
     "8. For heartbeats without a task, report status briefly and stop. If you have assigned tasks, WORK ON THEM — do not just report status.",
+    "9. SAVE DELIVERABLES AS FILES: When working on a project task that produces a substantial output (analysis, report, data table, summary, recommendations), use write_file to save it as a markdown file in your current directory. Filename format: '{ISSUE-IDENTIFIER}-{short-slug}.md' (e.g. 'ANI-933-hardware-assets-analysis.md'). The issue comment should reference the file but not duplicate its full content. This builds up a project knowledge base accessible to future tasks.",
   );
 
   // Point agent to skills directory (if any were synced)
