@@ -614,6 +614,11 @@ export function createPluginWorkerHandle(
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
+      // LLM API keys — needed by plugins for extraction, brief generation, etc.
+      ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
+      ...(process.env.OPENAI_BASE_URL ? { OPENAI_BASE_URL: process.env.OPENAI_BASE_URL } : {}),
+      ...(process.env.OPENROUTER_API_KEY ? { OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY } : {}),
+      ...(process.env.PORT ? { PORT: process.env.PORT } : {}),
     };
 
     const child = fork(options.entrypointPath, [], {
