@@ -1,6 +1,6 @@
 # Paperclip Routines
 
-Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
+Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent, then queues the normal heartbeat flow for that assignee.
 
 A routine has:
 - One assigned agent and one project
@@ -183,5 +183,64 @@ GET /api/companies/{companyId}/routines
 GET /api/routines/{routineId}
 GET /api/routines/{routineId}/runs?limit=50
 ```
+
+Typical run outcomes:
+
+| Status | Meaning |
+|--------|---------|
+| `issue_created` | A new execution issue was created successfully |
+| `coalesced` | An active execution issue already existed and the run was merged into it |
+| `skipped` | An active execution issue already existed and policy skipped the run |
+| `failed` | Paperclip could not create the execution issue or queue the follow-up wake-up |
+
+## Troubleshooting Duplicate Routine Issue Identifiers
+
+If a routine run fails immediately with:
+
+```text
+duplicate key value violates unique constraint "issues_identifier_idx"
+```
+
+the failure happened before the agent executed. The usual cause is issue counter drift: the company counter is behind the highest canonical issue identifier already present in `issues`.
+
+Quick check:
+
+```sql
+select c.name, c.issue_prefix, c.issue_counter, max(i.issue_number) as max_issue_number
+from companies c
+left join issues i on i.company_id = c.id
+group by c.id, c.name, c.issue_prefix, c.issue_counter
+order by c.name;
+```
+
+Repair canonical identifiers and resync counters:
+
+```sql
+begin;
+
+update issues i
+set issue_number = split_part(upper(i.identifier), '-', 2)::integer
+from companies c
+where i.company_id = c.id
+  and i.issue_number is null
+  and i.identifier is not null
+  and split_part(upper(i.identifier), '-', 1) = upper(c.issue_prefix)
+  and split_part(upper(i.identifier), '-', 2) ~ '^[0-9]+$'
+  and split_part(upper(i.identifier), '-', 3) = '';
+
+update companies c
+set issue_counter = greatest(c.issue_counter, company_max.max_issue_number)
+from (
+  select company_id, max(issue_number) as max_issue_number
+  from issues
+  where issue_number is not null
+  group by company_id
+) as company_max
+where c.id = company_max.company_id;
+
+commit;
+```
+
+After the repair, rerun the affected routine. Existing failed `routine_runs` rows remain as historical records.
 
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.

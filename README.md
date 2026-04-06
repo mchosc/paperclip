@@ -232,6 +232,8 @@ pnpm db:migrate       # Apply migrations
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
+Routine troubleshooting: if scheduled or manual routines fail with `issues_identifier_idx`, see [docs/api/routines.md](docs/api/routines.md#troubleshooting-run-issue-creation).
+
 <br/>
 
 ## Roadmap

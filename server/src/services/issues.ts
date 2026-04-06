@@ -128,6 +128,27 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeIssueIdentifier(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.toUpperCase();
+}
+
+function parseCanonicalIssueNumber(issuePrefix: string, identifier: string | null): number | null {
+  if (!identifier) return null;
+  const canonicalPattern = new RegExp(`^${escapeRegexLiteral(issuePrefix)}-(\\d+)$`);
+  const match = canonicalPattern.exec(identifier);
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1] ?? "", 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -1184,13 +1205,56 @@ export function issueService(db: Db) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
         const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+          .select({
+            issueCounter: companies.issueCounter,
+            issuePrefix: companies.issuePrefix,
+          })
+          .from(companies)
+          .where(eq(companies.id, companyId));
+        if (!company) {
+          throw notFound("Company");
+        }
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const requestedIdentifier = normalizeIssueIdentifier(issueData.identifier);
+        const requestedIssueNumber = issueData.issueNumber ?? null;
+        if (requestedIssueNumber !== null && (!Number.isInteger(requestedIssueNumber) || requestedIssueNumber <= 0)) {
+          throw unprocessable("Issue number must be a positive integer");
+        }
+
+        const identifierIssueNumber = parseCanonicalIssueNumber(company.issuePrefix, requestedIdentifier);
+        if (
+          requestedIssueNumber !== null &&
+          requestedIdentifier &&
+          identifierIssueNumber === null
+        ) {
+          throw unprocessable("Explicit issue numbers require a company-prefixed identifier");
+        }
+        if (
+          requestedIssueNumber !== null &&
+          identifierIssueNumber !== null &&
+          requestedIssueNumber !== identifierIssueNumber
+        ) {
+          throw unprocessable("Issue number does not match the provided identifier");
+        }
+
+        let issueNumber = requestedIssueNumber ?? identifierIssueNumber;
+        let identifier = requestedIdentifier;
+
+        if (issueNumber === null && identifier === null) {
+          const [nextCompany] = await tx
+            .update(companies)
+            .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+          issueNumber = nextCompany.issueCounter;
+          identifier = `${nextCompany.issuePrefix}-${issueNumber}`;
+        } else if (issueNumber !== null) {
+          identifier ??= `${company.issuePrefix}-${issueNumber}`;
+          await tx
+            .update(companies)
+            .set({ issueCounter: sql`greatest(${companies.issueCounter}, ${issueNumber})` })
+            .where(eq(companies.id, companyId));
+        }
 
         const values = {
           ...issueData,

@@ -265,6 +265,39 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });
 
+  it("keeps the company issue counter in sync with explicit canonical identifiers", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      issueCounter: 10,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const imported = await svc.create(companyId, {
+      title: "Imported issue",
+      identifier: "pap-12",
+    });
+
+    const [companyAfterImport] = await db
+      .select({ issueCounter: companies.issueCounter })
+      .from(companies)
+      .where(eq(companies.id, companyId));
+
+    expect(imported.identifier).toBe("PAP-12");
+    expect(imported.issueNumber).toBe(12);
+    expect(companyAfterImport?.issueCounter).toBe(12);
+
+    const nextIssue = await svc.create(companyId, {
+      title: "Next generated issue",
+    });
+
+    expect(nextIssue.identifier).toBe("PAP-13");
+    expect(nextIssue.issueNumber).toBe(13);
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

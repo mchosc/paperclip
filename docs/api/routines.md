@@ -3,7 +3,7 @@ title: Routines
 summary: Recurring task scheduling, triggers, and run history
 ---
 
-Routines are recurring tasks that fire on a schedule, webhook, or API call and create a heartbeat run for the assigned agent.
+Routines are recurring tasks that fire on a schedule, webhook, or API call and create an execution issue for the assigned agent. Once the issue exists, Paperclip queues the normal heartbeat wake-up for that assignee.
 
 ## List Routines
 
@@ -177,6 +177,15 @@ GET /api/routines/{routineId}/runs?limit=50
 
 Returns recent run history for the routine. Defaults to 50 most recent runs.
 
+Each run records one of these high-level outcomes:
+
+| Status | Meaning |
+|-------|---------|
+| `issue_created` | A fresh execution issue was created and queued for the assignee |
+| `coalesced` | The routine fired while a previous execution issue was still active and was merged into that run |
+| `skipped` | The routine fired while a previous execution issue was still active and was skipped by policy |
+| `failed` | Paperclip could not create the execution issue or queue the follow-up wake-up |
+
 ## Agent Access Rules
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:
@@ -199,3 +208,58 @@ active -> paused -> active
 ```
 
 Archived routines do not fire and cannot be reactivated.
+
+## Troubleshooting Run Issue Creation
+
+If routine runs fail immediately with:
+
+```text
+duplicate key value violates unique constraint "issues_identifier_idx"
+```
+
+the routine scheduler is usually healthy and the failure happened while creating the execution issue.
+
+The most common cause is issue counter drift:
+
+- the company `issueCounter` is behind the highest canonical issue identifier already present in `issues`
+- a subsequent routine run tries to mint an identifier that already exists, such as `ANI-852`
+
+Quick checks:
+
+```sql
+select c.name, c.issue_prefix, c.issue_counter, max(i.issue_number) as max_issue_number
+from companies c
+left join issues i on i.company_id = c.id
+group by c.id, c.name, c.issue_prefix, c.issue_counter
+order by c.name;
+```
+
+Repair existing canonical identifiers and resync the company counter:
+
+```sql
+begin;
+
+update issues i
+set issue_number = split_part(upper(i.identifier), '-', 2)::integer
+from companies c
+where i.company_id = c.id
+  and i.issue_number is null
+  and i.identifier is not null
+  and split_part(upper(i.identifier), '-', 1) = upper(c.issue_prefix)
+  and split_part(upper(i.identifier), '-', 2) ~ '^[0-9]+$'
+  and split_part(upper(i.identifier), '-', 3) = '';
+
+update companies c
+set issue_counter = greatest(c.issue_counter, company_max.max_issue_number)
+from (
+  select company_id, max(issue_number) as max_issue_number
+  from issues
+  where issue_number is not null
+  group by company_id
+) as company_max
+where c.id = company_max.company_id;
+
+commit;
+```
+
+After the repair, rerun the affected routine. Existing failed `routine_runs` rows remain as historical failures; they are not rewritten retroactively.

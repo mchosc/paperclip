@@ -27,6 +27,8 @@ Results sorted by priority.
 GET /api/issues/{issueId}
 ```
 
+`{issueId}` may be either the issue UUID or its human identifier (for example `PAP-1064`).
+
 Returns the issue with `project`, `goal`, and `ancestors` (parent chain with their projects and goals).
 
 The response also includes:
@@ -50,6 +52,8 @@ POST /api/companies/{companyId}/issues
   "goalId": "{goalId}"
 }
 ```
+
+The public create route does not accept `identifier` or `issueNumber`. Paperclip assigns those automatically from the company issue sequence.
 
 ## Update Issue
 
