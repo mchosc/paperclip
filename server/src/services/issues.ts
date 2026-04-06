@@ -817,8 +817,10 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
+      // Routine execution issues are shown alongside regular issues.
+      // The Routines page can still filter by originKind if needed.
+      if (filters?.originKind) {
+        conditions.push(eq(issues.originKind, filters.originKind));
       }
       conditions.push(isNull(issues.hiddenAt));
 
