@@ -1298,6 +1298,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     systemParts.push(`You have ${syncedSkillCount} skill(s) in .skills/ — each is a directory containing a SKILL.md with domain knowledge. Use list_directory and read_file to consult them when the task requires specialized knowledge.`);
   }
 
+  // ── Read data mounts from project-folders plugin ──────────
+  try {
+    const mountsDir = resolve(cwd, ".mounts");
+    const metaPath = resolve(mountsDir, ".meta.json");
+    const metaRaw = await readFile(metaPath, "utf-8");
+    const meta = JSON.parse(metaRaw) as Record<string, { permissions: string; name: string }>;
+    const mountNames = Object.keys(meta);
+    if (mountNames.length > 0) {
+      const lines = mountNames.map((mn) => {
+        const m = meta[mn];
+        return `  - .mounts/${mn} (${m.permissions === "rw" ? "read-write" : "READ-ONLY"}) — ${m.name}`;
+      });
+      systemParts.push(
+        `\nData mounts available in your workspace:\n${lines.join("\n")}\n` +
+        `For READ-ONLY mounts: you may read and search files but must NOT write, modify, or delete anything in them.`,
+      );
+    }
+  } catch {
+    // No .mounts/ or .meta.json — normal, plugin may not be installed
+  }
+
   // ── Fetch assigned issues if no explicit task ──────────────
   // When there's no issueId in context (heartbeat/on_demand), check for
   // assigned issues so agents don't ignore pending work.
