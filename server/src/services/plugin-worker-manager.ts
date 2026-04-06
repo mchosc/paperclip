@@ -619,6 +619,8 @@ export function createPluginWorkerHandle(
       ...(process.env.OPENAI_BASE_URL ? { OPENAI_BASE_URL: process.env.OPENAI_BASE_URL } : {}),
       ...(process.env.OPENROUTER_API_KEY ? { OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY } : {}),
       ...(process.env.PORT ? { PORT: process.env.PORT } : {}),
+      ...(process.env.PAPERCLIP_SHARED_DRIVE ? { PAPERCLIP_SHARED_DRIVE: process.env.PAPERCLIP_SHARED_DRIVE } : {}),
+      ...(process.env.PAPERCLIP_SHARED_DRIVE_LABEL ? { PAPERCLIP_SHARED_DRIVE_LABEL: process.env.PAPERCLIP_SHARED_DRIVE_LABEL } : {}),
     };
 
     const child = fork(options.entrypointPath, [], {
