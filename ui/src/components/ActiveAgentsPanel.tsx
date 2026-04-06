@@ -30,24 +30,21 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 
   const runs = useMemo(() => {
     const raw = liveRuns ?? [];
-    // Deduplicate: if the same agent has multiple runs and some lack an issueId,
-    // drop the issueless ones so the dashboard doesn't show empty cards.
-    const byAgent = new Map<string, LiveRunForIssue[]>();
+    // Show one card per agent: prefer active (queued/running), then most recent.
+    const best = new Map<string, LiveRunForIssue>();
     for (const run of raw) {
-      const list = byAgent.get(run.agentId) ?? [];
-      list.push(run);
-      byAgent.set(run.agentId, list);
-    }
-    const result: LiveRunForIssue[] = [];
-    for (const agentRuns of byAgent.values()) {
-      const withIssue = agentRuns.filter((r) => r.issueId);
-      if (withIssue.length > 0 && withIssue.length < agentRuns.length) {
-        result.push(...withIssue);
-      } else {
-        result.push(...agentRuns);
+      const existing = best.get(run.agentId);
+      if (!existing) {
+        best.set(run.agentId, run);
+        continue;
+      }
+      const runActive = run.status === "queued" || run.status === "running";
+      const existingActive = existing.status === "queued" || existing.status === "running";
+      if (runActive && !existingActive) {
+        best.set(run.agentId, run);
       }
     }
-    return result;
+    return Array.from(best.values());
   }, [liveRuns]);
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(companyId),
