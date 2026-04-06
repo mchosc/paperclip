@@ -760,6 +760,22 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
+          await logActivity(db, {
+            companyId: input.routine.companyId,
+            actorType: "system",
+            actorId:
+              input.source === "schedule"
+                ? "routine-scheduler"
+                : input.source === "webhook"
+                  ? "routine-webhook"
+                  : input.source === "api"
+                    ? "routine-api"
+                    : "routine-manual",
+            action: "issue.created",
+            entityType: "issue",
+            entityId: createdIssue.id,
+            details: { title: createdIssue.title, identifier: createdIssue.identifier },
+          });
         } catch (error) {
           const isOpenExecutionConflict =
             !!error &&

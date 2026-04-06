@@ -244,6 +244,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
+  it("logs issue.created when a routine creates a fresh execution issue", async () => {
+    const { routine, svc } = await seedFixture();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const createdActivity = await db
+      .select({
+        actorType: activityLog.actorType,
+        actorId: activityLog.actorId,
+        action: activityLog.action,
+        entityType: activityLog.entityType,
+        entityId: activityLog.entityId,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, run.linkedIssueId!))
+      .then((rows) => rows.find((row) => row.action === "issue.created") ?? null);
+
+    expect(createdActivity).not.toBeNull();
+    expect(createdActivity).toMatchObject({
+      actorType: "system",
+      actorId: "routine-manual",
+      action: "issue.created",
+      entityType: "issue",
+      entityId: run.linkedIssueId!,
+    });
+    expect(createdActivity?.details).toMatchObject({
+      title: routine.title,
+    });
+  });
+
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {
     let wakeupResolved = false;
     const { routine, svc } = await seedFixture({
