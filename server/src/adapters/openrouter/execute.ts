@@ -1298,25 +1298,70 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     systemParts.push(`You have ${syncedSkillCount} skill(s) in .skills/ — each is a directory containing a SKILL.md with domain knowledge. Use list_directory and read_file to consult them when the task requires specialized knowledge.`);
   }
 
-  // ── Read data mounts from project-folders plugin ──────────
+  // ── Read and sync data mounts from project-folders plugin ──
+  let mountMeta: Record<string, { permissions: string; name: string }> | null = null;
+  const mountsBaseDir = resolve(cwd, ".mounts");
+
+  // Scan all project dirs for this company for mount configs
   try {
-    const mountsDir = resolve(cwd, ".mounts");
-    const metaPath = resolve(mountsDir, ".meta.json");
-    const metaRaw = await readFile(metaPath, "utf-8");
-    const meta = JSON.parse(metaRaw) as Record<string, { permissions: string; name: string }>;
-    const mountNames = Object.keys(meta);
+    const companyProjectsDir = `/paperclip/.paperclip/instances/default/projects/${agent.companyId}`;
+    const projectDirs = await readdir(companyProjectsDir).catch(() => [] as string[]);
+    const allMounts: Array<{ name: string; sourcePath: string; mountName: string; permissions: string }> = [];
+
+    for (const projId of projectDirs) {
+      const configPath = resolve(companyProjectsDir, projId, "_default", ".mounts-config.json");
+      try {
+        const configRaw = await readFile(configPath, "utf-8");
+        const mounts = JSON.parse(configRaw) as Array<{ name: string; sourcePath: string; mountName: string; permissions: string; enabled: boolean; expiresAt?: string }>;
+        for (const m of mounts) {
+          if (!m.enabled) continue;
+          if (m.expiresAt && new Date(m.expiresAt).getTime() < Date.now()) continue;
+          allMounts.push(m);
+        }
+      } catch { /* no config for this project */ }
+    }
+
+    if (allMounts.length > 0) {
+      await mkdir(mountsBaseDir, { recursive: true });
+      const meta: Record<string, { permissions: string; name: string }> = {};
+      for (const mount of allMounts) {
+        const linkPath = resolve(mountsBaseDir, mount.mountName);
+        try {
+          const existing = await readlink(linkPath).catch(() => null);
+          if (existing !== mount.sourcePath) {
+            if (existing !== null) await unlink(linkPath);
+            await symlink(mount.sourcePath, linkPath);
+          }
+          meta[mount.mountName] = { permissions: mount.permissions, name: mount.name };
+        } catch { /* skip failed mount */ }
+      }
+      await writeFileAsync(resolve(mountsBaseDir, ".meta.json"), JSON.stringify(meta, null, 2));
+      mountMeta = meta;
+      await onLog("stdout", `[openrouter] Synced ${Object.keys(meta).length} mount(s) to .mounts/\n`);
+    }
+  } catch { /* projects dir doesn't exist */ }
+
+  // Fallback: read existing .meta.json from CWD
+  if (!mountMeta) {
+    try {
+      const metaRaw = await readFile(resolve(mountsBaseDir, ".meta.json"), "utf-8");
+      mountMeta = JSON.parse(metaRaw);
+    } catch { /* no mounts */ }
+  }
+
+  if (mountMeta) {
+    const mountNames = Object.keys(mountMeta);
     if (mountNames.length > 0) {
       const lines = mountNames.map((mn) => {
-        const m = meta[mn];
+        const m = mountMeta![mn];
         return `  - .mounts/${mn} (${m.permissions === "rw" ? "read-write" : "READ-ONLY"}) — ${m.name}`;
       });
       systemParts.push(
-        `\nData mounts available in your workspace:\n${lines.join("\n")}\n` +
-        `For READ-ONLY mounts: you may read and search files but must NOT write, modify, or delete anything in them.`,
+        `\nYour project has the following data folders mounted:\n${lines.join("\n")}\n` +
+        `If the task references a file, repository, or folder you cannot find in your current directory, check these mounts using list_directory.\n` +
+        `For READ-ONLY mounts: you may read and search files but must NOT write, modify, or delete anything.`,
       );
     }
-  } catch {
-    // No .mounts/ or .meta.json — normal, plugin may not be installed
   }
 
   // ── Fetch assigned issues if no explicit task ──────────────
