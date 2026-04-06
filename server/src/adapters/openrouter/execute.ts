@@ -1620,6 +1620,79 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } catch { /* best effort */ }
     }
 
+    // ── Auto-inject KB context (smart layered approach) ─────
+    // Search the company-wide Knowledge Base for relevant prior work.
+    // Inject titles + excerpts as signals; agent uses search_knowledge for full details.
+    let kbBlock = "";
+    if (jwtAuthHeader && (currentIssueId || assignedIssuesBlock)) {
+      try {
+        const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
+        const kbQuery = currentIssueBlock
+          ? currentIssueBlock.substring(0, 300)
+          : assignedIssuesBlock.substring(0, 300);
+        if (kbQuery.length > 10) {
+          const kbRes = await fetch(`${memosUrl}/product/search`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: kbQuery,
+              user_id: `kb-${agent.companyId}`,
+              readable_cube_ids: [agent.companyId],
+              top_k: 3,
+              mode: "fast",
+            }),
+            signal: AbortSignal.timeout(3000),
+          });
+          if (kbRes.ok) {
+            const kbBody = await kbRes.json() as { data?: Record<string, unknown> };
+            const kbEntries: Array<{ label: string; title: string; excerpt: string }> = [];
+            if (kbBody.data && typeof kbBody.data === "object") {
+              for (const [, val] of Object.entries(kbBody.data)) {
+                if (typeof val === "string" && val.length > 10) {
+                  // pref_note — extract tags inline
+                  const titleMatch = val.match(/\[title: ([^\]]+)\]/);
+                  const sourceMatch = val.match(/\[kb_source: ([^\]]+)\]/);
+                  const clean = val.replace(/\[[\w_]+: [^\]]+\]/g, "").trim();
+                  const label = sourceMatch?.[1] === "executive_brief" ? "Brief"
+                    : sourceMatch?.[1] === "document" ? "Document" : "Issue";
+                  if (titleMatch) {
+                    kbEntries.push({ label, title: titleMatch[1], excerpt: clean.substring(0, 200) });
+                  }
+                } else if (Array.isArray(val)) {
+                  for (const group of val) {
+                    const g = group as { memories?: Array<{ memory?: string }> };
+                    for (const mem of g.memories ?? []) {
+                      const text = mem.memory || "";
+                      if (text.length < 20) continue;
+                      const titleMatch = text.match(/\[title: ([^\]]+)\]/);
+                      const sourceMatch = text.match(/\[kb_source: ([^\]]+)\]/);
+                      const clean = text.replace(/\[[\w_]+: [^\]]+\]/g, "").trim();
+                      const label = sourceMatch?.[1] === "executive_brief" ? "Brief"
+                        : sourceMatch?.[1] === "document" ? "Document" : "Issue";
+                      kbEntries.push({
+                        label,
+                        title: titleMatch?.[1] ?? clean.substring(0, 60),
+                        excerpt: clean.substring(0, 200),
+                      });
+                    }
+                  }
+                }
+              }
+            }
+            if (kbEntries.length > 0) {
+              const lines = kbEntries.slice(0, 3).map((e) =>
+                `- [${e.label}] ${e.title} — ${e.excerpt}...`,
+              );
+              kbBlock = "\n## RELATED KNOWLEDGE BASE ENTRIES\nPrior completed work that may be relevant to your current task:\n" +
+                lines.join("\n") +
+                "\n\nUse the search_knowledge tool to retrieve full details on any of these entries.";
+              await onLog("stdout", `[openrouter] Injected ${kbEntries.length} KB entries\n`);
+            }
+          }
+        }
+      } catch { /* best effort */ }
+    }
+
     // ── Build messages for this issue ────────────────────────
     const userParts: string[] = [];
     if (renderedBootstrap) userParts.push(renderedBootstrap);
@@ -1635,6 +1708,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
     if (memoryBlock) userParts.push(memoryBlock);
+    if (kbBlock) userParts.push(kbBlock);
 
     const messages: ChatMessage[] = [
       { role: "system", content: systemParts.join("\n") },
