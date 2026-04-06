@@ -55,7 +55,7 @@ import { logger } from "../middleware/logger.js";
 // ---------------------------------------------------------------------------
 
 /** Default timeout for RPC calls in milliseconds. */
-const DEFAULT_RPC_TIMEOUT_MS = 90_000;
+const DEFAULT_RPC_TIMEOUT_MS = 180_000;
 
 /** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
 const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
