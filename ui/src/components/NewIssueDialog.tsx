@@ -22,6 +22,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -327,6 +329,7 @@ export function NewIssueDialog() {
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
+  const [disableTriage, setDisableTriage] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const stageFileInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
@@ -635,6 +638,7 @@ export function NewIssueDialog() {
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
+    setDisableTriage(false);
     setIsFileDragOver(false);
     setRelatedIssues([]);
     setRelatedSearch("");
@@ -710,6 +714,7 @@ export function NewIssueDialog() {
         ? { executionWorkspaceId: selectedExecutionWorkspaceId }
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+      ...(disableTriage ? { disableTriage: true } : {}),
     });
   }
 
@@ -904,7 +909,7 @@ export function NewIssueDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        aria-describedby={undefined}
+        aria-describedby="new-issue-description"
         className={cn(
           "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
           expanded
@@ -934,6 +939,10 @@ export function NewIssueDialog() {
           }
         }}
       >
+        <DialogTitle className="sr-only">New issue</DialogTitle>
+        <DialogDescription id="new-issue-description" className="sr-only">
+          Create a new issue. Fill in title, description, and assignee.
+        </DialogDescription>
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1531,6 +1540,25 @@ export function NewIssueDialog() {
               </button>
             </PopoverContent>
           </Popover>
+
+          <button
+            type="button"
+            onClick={() => setDisableTriage((value) => !value)}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors ${
+              disableTriage
+                ? "border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                : "border-border text-muted-foreground hover:bg-accent/50"
+            }`}
+            title="When enabled, this issue will skip the task-triage plugin (no auto-block, no complexity scoring, no auto-decomposition into subtasks)."
+          >
+            <input
+              type="checkbox"
+              checked={disableTriage}
+              readOnly
+              className="h-3 w-3 pointer-events-none"
+            />
+            Skip triage
+          </button>
         </div>
 
         {/* Footer */}

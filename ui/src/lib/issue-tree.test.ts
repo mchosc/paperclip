@@ -22,6 +22,7 @@ function makeIssue(id: string, parentId: string | null = null): Issue {
     issueNumber: 1,
     requestDepth: 0,
     billingCode: null,
+    disableTriage: false,
     assigneeAdapterOverrides: null,
     executionWorkspaceId: null,
     executionWorkspacePreference: null,

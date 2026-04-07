@@ -32,7 +32,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/Rout
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -296,6 +296,7 @@ export function Routines() {
     concurrencyPolicy: string;
     catchUpPolicy: string;
     variables: RoutineVariable[];
+    disableTriage: boolean;
   }>({
     title: "",
     description: "",
@@ -305,6 +306,7 @@ export function Routines() {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    disableTriage: false,
   });
   const routineViewStateKey = selectedCompanyId
     ? `paperclip:routines-view:${selectedCompanyId}`
@@ -371,6 +373,7 @@ export function Routines() {
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [],
+        disableTriage: false,
       });
       setComposerOpen(false);
       setAdvancedOpen(false);
@@ -643,7 +646,12 @@ export function Routines() {
         <DialogContent
           showCloseButton={false}
           className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0"
+          aria-describedby="new-routine-description"
         >
+          <DialogTitle className="sr-only">New routine</DialogTitle>
+          <DialogDescription id="new-routine-description" className="sr-only">
+            Define the recurring work first. Trigger setup comes next on the detail page.
+          </DialogDescription>
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
@@ -810,6 +818,26 @@ export function Routines() {
                   value={draft.variables}
                   onChange={(variables) => setDraft((current) => ({ ...current, variables }))}
                 />
+              </div>
+              <div className="mt-4">
+                <label className="flex items-start gap-2 cursor-pointer rounded-md border border-border/60 px-3 py-2 text-sm hover:bg-accent/40 transition-colors">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4"
+                    checked={draft.disableTriage}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, disableTriage: event.target.checked }))
+                    }
+                  />
+                  <span>
+                    <span className="font-medium">Skip task triage on every run</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Routine-fired issues will not be auto-blocked, scored, or decomposed by the
+                      task-triage plugin. Use this for deterministic operational routines whose
+                      instructions are self-contained.
+                    </span>
+                  </span>
+                </label>
               </div>
             </div>
 

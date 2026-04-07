@@ -374,6 +374,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           identifier: null,
           requestDepth: 0,
           billingCode: null,
+          disableTriage: false,
           assigneeAdapterOverrides: null,
           executionWorkspaceId: null,
           executionWorkspacePreference: null,

@@ -152,6 +152,7 @@ describe("optimistic issue comments", () => {
         originRunId: null,
         requestDepth: 0,
         billingCode: null,
+        disableTriage: false,
         assigneeAdapterOverrides: null,
         executionWorkspaceId: null,
         executionWorkspacePreference: null,

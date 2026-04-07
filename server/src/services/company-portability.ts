@@ -4232,6 +4232,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
                 : "skip_missed",
             variables: routineDefinition.variables ?? [],
+            disableTriage: false,
           }, {
             agentId: null,
             userId: actorUserId ?? null,

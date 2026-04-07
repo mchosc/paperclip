@@ -50,6 +50,7 @@ export interface Routine {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  disableTriage: boolean;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;

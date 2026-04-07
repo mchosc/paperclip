@@ -50,6 +50,7 @@ export const createIssueSchema = z.object({
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
+  disableTriage: z.boolean().optional().default(false),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),

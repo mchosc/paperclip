@@ -25,6 +25,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     identifier: "PAP-1",
     requestDepth: 0,
     billingCode: null,
+    disableTriage: false,
     assigneeAdapterOverrides: null,
     executionWorkspaceId: null,
     executionWorkspacePreference: null,

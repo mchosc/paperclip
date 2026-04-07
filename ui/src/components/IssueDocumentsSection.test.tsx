@@ -193,6 +193,7 @@ function createIssue(): Issue {
     issueNumber: 807,
     requestDepth: 0,
     billingCode: null,
+    disableTriage: false,
     assigneeAdapterOverrides: null,
     executionWorkspaceId: null,
     executionWorkspacePreference: null,
