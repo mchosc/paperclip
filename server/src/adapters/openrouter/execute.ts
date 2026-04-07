@@ -671,13 +671,7 @@ async function executeToolCall(
     await onLog("stdout", `[openrouter] Saving memory: ${content.substring(0, 80)}...\n`);
     try {
       const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
-      // Ensure agent is registered
-      await fetch(`${memosUrl}/product/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: apiContext.agentId, user_name: apiContext.agentName || apiContext.agentId }),
-        signal: AbortSignal.timeout(3000),
-      }).catch(() => {});
+      // MemOS auto-creates users on first /product/add call, no register needed
       // Store the memory
       const metaLine = [
         category ? `[category: ${category}]` : "",
@@ -1911,13 +1905,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (currentIssueId && iterationLastMessage && iterationLastMessage.length > 100) {
       try {
         const memosUrl = process.env.MEMOS_URL || "http://memos:8000";
-        // Register agent (idempotent)
-        await fetch(`${memosUrl}/product/register`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_id: agent.id, user_name: agent.name || agent.id }),
-          signal: AbortSignal.timeout(3000),
-        }).catch(() => {});
+        // MemOS auto-creates users on first /product/add call, no register needed
         // Store the run output as memory
         const metaLine = [
           `[source: auto_extract]`,
